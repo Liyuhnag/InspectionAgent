@@ -16,12 +16,15 @@ import type { TextChunkSource } from '@/domain/chat/types'
 const props = withDefaults(
   defineProps<{
     streamSource?: TextChunkSource
+    username?: string
   }>(),
   {
     streamSource: undefined,
+    username: '',
   },
 )
 
+const collapsed = ref(false)
 const ids = new SequenceId()
 const source = props.streamSource ?? new LocalTimedChunkSource(localReply)
 const desk = reactive(new DialogueDesk(source, () => ids.next()))
@@ -54,7 +57,7 @@ function toBubble(message: (typeof desk.active.chat.messages)[number]): BubbleLi
     maxWidth: '640px',
     noStyle: false,
     avatar: fromUser ? userAvatar : assistantAvatar,
-    avatarAlt: fromUser ? '我' : '巡检智能体',
+    avatarAlt: fromUser ? '我' : '巡锋',
     avatarSize: '36px',
     avatarGap: '12px',
     avatarShape: 'circle',
@@ -146,27 +149,48 @@ onBeforeUnmount(() => {
 
 window.addEventListener('keydown', onEnter, true)
 
+const emit = defineEmits<{
+  logout: []
+}>()
+
 defineExpose({ submitText, createDialogue, desk })
 </script>
 
 <template>
   <main class="chat-shell">
-    <aside class="session-pane">
-      <div class="session-toolbar">
-        <h1>会话</h1>
-        <el-button class="session-create" @click="createDialogue">新建会话</el-button>
+    <aside class="session-pane" :class="{ 'session-pane--collapsed': collapsed }">
+      <div class="session-clip">
+        <div class="session-body" :inert="collapsed">
+          <div class="session-toolbar">
+            <h1>会话</h1>
+            <el-button class="session-create" @click="createDialogue">新建会话</el-button>
+          </div>
+          <Conversations
+            class="session-list"
+            :active="desk.activeId"
+            :items="dialogueItems"
+            row-key="id"
+            label-key="label"
+            :show-built-in-menu="false"
+            :items-hover-style="sessionHoverStyle"
+            :items-active-style="sessionActiveStyle"
+            @change="selectDialogue"
+          />
+          <div class="session-user">
+            <img class="session-user-avatar" :src="userAvatar" alt="" />
+            <span class="session-user-name">{{ props.username }}</span>
+            <el-button class="session-logout" link @click="emit('logout')">退出</el-button>
+          </div>
+        </div>
       </div>
-      <Conversations
-        class="session-list"
-        :active="desk.activeId"
-        :items="dialogueItems"
-        row-key="id"
-        label-key="label"
-        :show-built-in-menu="false"
-        :items-hover-style="sessionHoverStyle"
-        :items-active-style="sessionActiveStyle"
-        @change="selectDialogue"
-      />
+      <button
+        class="session-fold"
+        type="button"
+        :aria-label="collapsed ? '展开会话栏' : '收起会话栏'"
+        @click="collapsed = !collapsed"
+      >
+        <span class="session-fold-icon" />
+      </button>
     </aside>
 
     <section class="chat-pane" :class="{ 'chat-pane--empty': desk.active.empty }">
@@ -183,7 +207,7 @@ defineExpose({ submitText, createDialogue, desk })
             class="chat-welcome"
             variant="borderless"
             :icon="assistantAvatar"
-            title="你好，我是你的巡检智能体"
+            title="你好，我是巡锋"
             description="告诉我要巡检的设备或区域，我可以帮你核对运行状态、汇总异常，并整理成巡检报告。"
           />
           <Prompts
@@ -224,12 +248,33 @@ defineExpose({ submitText, createDialogue, desk })
 }
 
 .session-pane {
+  position: relative;
   width: 280px;
   flex: none;
-  display: flex;
-  flex-direction: column;
   background: #ffffff;
   border-right: 1px solid #d6e4ff;
+  transition: width 0.24s ease;
+}
+
+.session-pane--collapsed {
+  width: 0;
+}
+
+.session-clip {
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-body {
+  width: 280px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  transition: opacity 0.16s ease;
+}
+
+.session-pane--collapsed .session-body {
+  opacity: 0;
 }
 
 .session-toolbar {
@@ -238,6 +283,43 @@ defineExpose({ submitText, createDialogue, desk })
   justify-content: space-between;
   gap: 12px;
   padding: 20px 16px 12px;
+}
+
+.session-fold {
+  position: absolute;
+  z-index: 2;
+  top: calc(50% - 28px);
+  left: 100%;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid #d6e4ff;
+  border-left: 0;
+  border-radius: 0 10px 10px 0;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.session-fold:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+.session-fold-icon {
+  width: 7px;
+  height: 7px;
+  margin-left: -3px;
+  border-right: 2px solid #1677ff;
+  border-bottom: 2px solid #1677ff;
+  border-radius: 1px;
+  transform: rotate(135deg);
+}
+
+.session-pane--collapsed .session-fold-icon {
+  margin-left: -5px;
+  transform: rotate(-45deg);
 }
 
 .session-toolbar h1 {
@@ -250,6 +332,37 @@ defineExpose({ submitText, createDialogue, desk })
 .session-create {
   border-color: #1677ff;
   color: #1677ff;
+}
+
+.session-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid #d6e4ff;
+}
+
+.session-user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.session-user-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2a44;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logout {
+  flex: none;
+  color: #5b6b88;
 }
 
 .session-list {

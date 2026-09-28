@@ -69,7 +69,7 @@ describe('ChatView', () => {
       submitText: (text: string) => boolean
     }
     expect(wrapper.text()).toContain('新会话')
-    expect(wrapper.find('.welcome').text()).toContain('巡检智能体')
+    expect(wrapper.find('.welcome').text()).toContain('巡锋')
     expect(exposed.submitText('检查阀门')).toBe(true)
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('检查阀门')
@@ -100,6 +100,23 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('检查设备运行状态')
     expect(wrapper.text()).toContain('正在回复')
     expect(wrapper.find('.welcome').exists()).toBe(false)
+  })
+
+  it('会话栏可以收起再展开', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          ElButton: { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('新建会话')
+    await wrapper.get('[aria-label="收起会话栏"]').trigger('click')
+    expect(wrapper.find('.session-pane').classes()).toContain('session-pane--collapsed')
+    expect(wrapper.find('[aria-label="展开会话栏"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="展开会话栏"]').trigger('click')
+    expect(wrapper.find('.session-pane').classes()).not.toContain('session-pane--collapsed')
   })
 })
 

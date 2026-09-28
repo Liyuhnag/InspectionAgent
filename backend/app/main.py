@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 from sqlalchemy.engine import Engine
 
+from app.api.auth import AuthMiddleware
 from app.api.routes.register import register_router
 from app.api.routes.session import session_router
 from app.config.settings import DEV_CONFIG
@@ -35,7 +36,9 @@ def create_app(
     if session_ttl_seconds is None:
         session_ttl_seconds = settings.jwt.expires_minutes * 60
     User.create_table(engine)
+    login = Login(engine, codes, session_ttl_seconds)
     app = FastAPI()
+    app.add_middleware(AuthMiddleware, login=login)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(DEV_ORIGINS),
@@ -44,5 +47,5 @@ def create_app(
         allow_headers=["Content-Type", "satoken"],
     )
     app.include_router(register_router(Registration(engine, codes)))
-    app.include_router(session_router(Login(engine, codes, session_ttl_seconds)))
+    app.include_router(session_router(login))
     return app

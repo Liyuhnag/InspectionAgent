@@ -155,6 +155,20 @@ def test_读取当前用户会刷新过期时间() -> None:
         _delete(engine, _ANN)
 
 
+def test_未列入排除名单的接口默认要登录() -> None:
+    """没有 token 时未知接口也是 401。带上有效 token 才进入接口本身。"""
+    engine, codes, client = _app()
+    token = ""
+    try:
+        assert client.get("/anything").status_code == 401
+        _create(engine, _ANN, "ann-secret")
+        token = client.post("/session", json={"username": _ANN, "password": "ann-secret"}).json()["token"]
+        assert client.get("/anything", headers={TOKEN_HEADER: token}).status_code == 404
+    finally:
+        _clear_session(codes, token)
+        _delete(engine, _ANN)
+
+
 def test_开发来源可以带上_satoken_头() -> None:
     """前端开发来源允许 satoken 头，其他来源不允许。"""
     _engine, _codes, client = _app()

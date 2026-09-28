@@ -7,11 +7,9 @@ from fastapi import Request
 from pydantic import BaseModel
 from pydantic import field_validator
 
+from app.api.auth import TOKEN_HEADER
 from app.users.login import InvalidCredentials
-from app.users.login import InvalidSession
 from app.users.login import Login
-
-TOKEN_HEADER = "satoken"
 
 
 class LoginBody(BaseModel):
@@ -31,7 +29,7 @@ class LoginBody(BaseModel):
 
 
 def session_router(login: Login) -> APIRouter:
-    """挂上登录、退出和当前用户。"""
+    """挂上登录、退出和当前用户。当前用户由鉴权拦截器写入。"""
     router = APIRouter()
 
     @router.post("/session")
@@ -51,11 +49,9 @@ def session_router(login: Login) -> APIRouter:
 
     @router.get("/session")
     def current_user(request: Request) -> dict[str, str]:
-        """用户名只来自 satoken 头对应的会话。"""
-        token = request.headers.get(TOKEN_HEADER, "")
-        try:
-            username = login.current_username(token)
-        except InvalidSession:
+        """返回拦截器已经解析出的用户名。"""
+        username = getattr(request.state, "username", "")
+        if not isinstance(username, str) or not username:
             raise HTTPException(status_code=401, detail="未登录")
         return {"username": username}
 

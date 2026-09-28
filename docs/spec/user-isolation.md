@@ -33,7 +33,7 @@
 
 JWT 工具在 `backend/app/users/`，不在 `backend/app/tools/`。它只提供按用户名签发和解析出用户名。浏览器登录不使用它。
 
-HTTP 由 `api/routes` 校验入参并调用用户模块，不调用 workflow：
+HTTP 由 `api/routes` 校验入参并调用用户模块，不调用 workflow。除排除名单外，请求先鉴权。排除的是发送验证码、注册、登录和退出：
 
 | 动作 | 需要登录 | 成功 | 失败 |
 | --- | --- | --- | --- |

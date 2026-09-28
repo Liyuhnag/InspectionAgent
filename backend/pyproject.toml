@@ -1,0 +1,21 @@
+[project]
+name = "inspection-agent"
+version = "0.1.0"
+description = "巡检多 agent 后端"
+requires-python = ">=3.11"
+dependencies = [
+    "PyMySQL",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

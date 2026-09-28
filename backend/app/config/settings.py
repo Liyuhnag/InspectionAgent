@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""从 YAML 读取 MySQL 和 JWT 配置。"""
+"""读取开发配置。测试和开发共用同一台 MySQL，只是 database 不同。"""
 
 from pathlib import Path
 
 import yaml
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEV_CONFIG = _BACKEND_ROOT / "config" / "dev.yaml"
 
 
 class ConfigError(Exception):
@@ -21,19 +24,6 @@ class MysqlSettings:
         self.user = user
         self.password = password
 
-    @classmethod
-    def load(cls, path: Path) -> "MysqlSettings":
-        """从 YAML 读取连接参数，缺字段时失败。"""
-        data = _read_mapping(path)
-        _require(data, ("host", "port", "database", "user", "password"))
-        return cls(
-            host=str(data["host"]),
-            port=int(data["port"]),
-            database=str(data["database"]),
-            user=str(data["user"]),
-            password=str(data["password"]),
-        )
-
 
 class JwtSettings:
     """JWT 签名参数。"""
@@ -43,12 +33,48 @@ class JwtSettings:
         self.secret = secret
         self.expires_minutes = expires_minutes
 
+
+class AppSettings:
+    """开发配置。数据库和 JWT 写在同一个文件里。"""
+
+    def __init__(self, mysql: MysqlSettings, test_database: str, jwt: JwtSettings) -> None:
+        """保存开发库、测试库名和 JWT 参数。"""
+        self.mysql = mysql
+        self.jwt = jwt
+        self._test_database = test_database
+
+    def test_mysql(self) -> MysqlSettings:
+        """同一台 MySQL 上的测试库。主机、端口、账号与开发库相同。"""
+        return MysqlSettings(
+            host=self.mysql.host,
+            port=self.mysql.port,
+            database=self._test_database,
+            user=self.mysql.user,
+            password=self.mysql.password,
+        )
+
     @classmethod
-    def load(cls, path: Path) -> "JwtSettings":
-        """从 YAML 读取签名参数，缺字段时失败。"""
+    def load(cls, path: Path) -> "AppSettings":
+        """读取开发配置。缺文件或缺字段时失败。"""
         data = _read_mapping(path)
-        _require(data, ("secret", "expires_minutes"))
-        return cls(secret=str(data["secret"]), expires_minutes=int(data["expires_minutes"]))
+        mysql_data = _section(data, "mysql")
+        jwt_data = _section(data, "jwt")
+        _require(mysql_data, ("host", "port", "user", "password", "database", "test_database"))
+        _require(jwt_data, ("secret", "expires_minutes"))
+        return cls(
+            mysql=MysqlSettings(
+                host=str(mysql_data["host"]),
+                port=int(mysql_data["port"]),
+                database=str(mysql_data["database"]),
+                user=str(mysql_data["user"]),
+                password=str(mysql_data["password"]),
+            ),
+            test_database=str(mysql_data["test_database"]),
+            jwt=JwtSettings(
+                secret=str(jwt_data["secret"]),
+                expires_minutes=int(jwt_data["expires_minutes"]),
+            ),
+        )
 
 
 def _read_mapping(path: Path) -> dict:
@@ -59,6 +85,14 @@ def _read_mapping(path: Path) -> dict:
     if not isinstance(loaded, dict):
         raise ConfigError(f"配置文件内容无效：{path}")
     return loaded
+
+
+def _section(data: dict, name: str) -> dict:
+    """取出命名配置节。没有这一节时失败。"""
+    section = data.get(name)
+    if not isinstance(section, dict):
+        raise ConfigError(f"缺少配置：{name}")
+    return section
 
 
 def _require(data: dict, names: tuple) -> None:

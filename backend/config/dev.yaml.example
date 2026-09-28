@@ -1,0 +1,10 @@
+mysql:
+  host: ""
+  port:
+  user: ""
+  password: ""
+  database: ""
+  test_database: ""
+jwt:
+  secret: ""
+  expires_minutes:

@@ -2,7 +2,7 @@
 
 ## 要解决的变化点
 
-每张表都要创建、读取、更新和删除。这些步骤如果写在各个仓库的 SQL 里，新增一张表就要再写一套语句。
+每张表都要创建、读取、更新和删除。这些步骤如果写在各自的 SQL 里，新增一张表就要再写一套语句。
 
 ## 使用的设计
 
@@ -12,8 +12,7 @@
 
 - `backend/app/db/crud_model.py` 中的 `CrudModel`
 - `backend/app/users/user_model.py` 中的 `User`
-- `backend/app/users/mysql_user_repository.py` 只调用模型方法，并转换成用户模块自己的结果
 
 ## 以后怎么扩展
 
-新增一张表时，继承 `CrudModel` 并声明列。不要在仓库里写 `INSERT` 或 `SELECT`。调用方仍然依赖自己的仓库接口，不直接持有数据库会话。
+新增一张表时，继承 `CrudModel` 并声明列。调用 `create`、`get`、`update`、`delete`。不要再为这张表写仓库，也不要写 `INSERT` 或 `SELECT`。

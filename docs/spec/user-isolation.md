@@ -26,11 +26,10 @@
 
 配置文件：
 
-- `backend/config/mysql.yaml`：`host`、`port`、`database`、`user`、`password`。缺任一字段则读取失败。
-- `backend/config/jwt.yaml`：`secret`、`expires_minutes`。缺任一字段则读取失败。
-- 仓库只提交同名 `.example`，值为空。本机文件不提交。
+- `backend/config/dev.yaml`：`mysql` 与 `jwt` 写在同一个文件。数据库字段为 `host`、`port`、`user`、`password`、`database`、`test_database`。JWT 字段为 `secret`、`expires_minutes`。`database` 是开发库，`test_database` 是同一台 MySQL 上的测试库。
+- 缺文件或缺字段则读取失败。仓库只提交 `dev.yaml.example`，值为空。本机文件不提交。
 
-用户表由用户仓库创建。用户名唯一。列包含用户名、盐、密码加密结果。
+用户表由用户模型创建。用户名唯一。列包含用户名、盐、密码加密结果。创建、读取、更新、删除使用模型上的方法。
 
 JWT 工具在 `backend/app/users/`，不在 `backend/app/tools/`。它只提供按用户名签发和解析出用户名。
 
@@ -61,4 +60,4 @@ HTTP 由 `api/routes` 校验入参并调用用户模块，不调用 workflow：
 - 边界：缺配置字段、空用户名、重复注册、错误验证码、错误密码。
 - 失败：篡改或过期的 JWT 得到 401；甲的 Cookie 加上乙的用户名仍然得到甲。
 - 密码：同一明文两次加密结果不同，原盐可核对，错误密码失败。
-- 已有行为：现有聊天测试通过。没有测试库时 MySQL 集成测试跳过，不代替上述隔离测试。
+- 已有行为：现有聊天测试通过。没有本机 `dev.yaml` 或测试库不可用时，依赖测试库的用例跳过。

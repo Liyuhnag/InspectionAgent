@@ -17,15 +17,15 @@
 
 后端做成一个 FastAPI 应用，而不是一段可以随手换掉的内存脚本。用户模块是后面 session 的基础：session 只接收已经解析好的当前用户，不自己读配置、不自己验密码、不自己查用户表。
 
-新增 `backend/app/users/`。这里放用户实体、用户仓库接口和密码处理。MySQL 仓库是这个接口的实现。调用方依赖接口，不依赖具体连接。用户标识就是用户名。JWT 和以后的 session 都用用户名认出用户，不另建一套数字主键给外部使用。
+新增 `backend/app/users/`。这里放用户模型。表和列在模型上声明，创建、读取、更新、删除使用模型基类。用户标识就是用户名。JWT 和以后的 session 都用用户名认出用户，不另建一套数字主键给外部使用。
 
 JWT 的签发和解析做成一个单独的工具，放在 `backend/app/users/` 里，不放进 agent 的 `tools`。那个目录只做巡检一类的外部动作。这个工具只做两件事：用用户名签发 JWT，把 JWT 解析回用户名。用户模块和以后的 session 都调用它，不各自实现。用户名只从解析结果里拿，不从请求体里拿。甲带上自己的 JWT，再在参数里写乙的用户名，也只能读写甲的数据。
 
-鉴权直接用 JWT，不另做一套会话令牌。登录成功后签发 JWT，载荷里是用户名和过期时间，并通过 `Set-Cookie` 写入浏览器。Cookie 为 HttpOnly，前端脚本读不到，也不放进页面内存。除注册、登录、发送注册验证码外，接口都从 Cookie 读取 JWT。后端用上述工具校验签名和过期时间，得到用户名，再查出当前用户。签名不对、过期、或用户已不存在，都返回 401，不进入业务。签名密钥写在 `backend/config/jwt.yaml`，字段为 `secret`、`expires_minutes`。仓库提交 `jwt.yaml.example`，值为空。本机的 `jwt.yaml` 含密钥，加入 `.gitignore`，不提交。
+鉴权直接用 JWT，不另做一套会话令牌。登录成功后签发 JWT，载荷里是用户名和过期时间，并通过 `Set-Cookie` 写入浏览器。Cookie 为 HttpOnly，前端脚本读不到，也不放进页面内存。除注册、登录、发送注册验证码外，接口都从 Cookie 读取 JWT。后端用上述工具校验签名和过期时间，得到用户名，再查出当前用户。签名不对、过期、或用户已不存在，都返回 401，不进入业务。签名密钥写在 `backend/config/dev.yaml`，和数据库配置在同一个文件里。字段为 `jwt.secret`、`jwt.expires_minutes`。仓库提交 `dev.yaml.example`，值为空。本机的 `dev.yaml` 含密钥，加入 `.gitignore`，不提交。测试不另备配置文件，使用同一台 MySQL 的 `mysql.test_database`。
 
 密码写入用户表，不另找地方存。明文不入库。每条密码单独生成盐，加盐后再做单向加密，表里保存盐和加密结果。登录时用同一套盐和算法核对，不能从库里还原出原密码。
 
-应用启动时读取 `backend/config/mysql.yaml`，建立连接，并保证用户表存在。字段为 `host`、`port`、`database`、`user`、`password`。仓库提交 `backend/config/mysql.yaml.example`，五项都留空。本机的 `mysql.yaml` 含密码，加入 `.gitignore`，不提交。
+应用启动时读取 `backend/config/dev.yaml`。数据库字段为 `mysql.host`、`mysql.port`、`mysql.user`、`mysql.password`、`mysql.database`、`mysql.test_database`。开发和测试共用主机、端口和账号，`database` 是开发库，`test_database` 是测试库。缺文件或缺字段则读取失败。仓库提交 `dev.yaml.example`，值留空。本机文件含密码，加入 `.gitignore`，不提交。
 
 本阶段的接口：
 
@@ -41,7 +41,7 @@ JWT 的签发和解析做成一个单独的工具，放在 `backend/app/users/` 
 
 聊天记录要存储，但那是后续工作。这一步不建会话表，也不把现有对话写进 MySQL。session 需求来的时候，它的表带用户名，它的路由通过用户模块拿到当前用户，再按这个用户读写自己的记录。未登录的请求在进 session 之前就被 JWT 拒绝。
 
-隔离规则用假仓库测试，不依赖本机数据库。MySQL 仓库另有集成测试，没有可用的测试库时该测试跳过，不代替隔离测试。
+用户模型的测试使用 `test_database`。没有本机配置或测试库连不上时跳过。不另做内存实现，也不另备测试配置文件。
 
 ### 方案 B：用户入库的同时把会话也迁到 MySQL
 

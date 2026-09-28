@@ -26,5 +26,4 @@ id_rsa.pub
 credentials.json
 secrets.json
 
-backend/config/mysql.yaml
-backend/config/jwt.yaml
+backend/config/dev.yaml

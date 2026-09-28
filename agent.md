@@ -25,6 +25,10 @@ git checkout -b feat/<需求名>
 
 开发、提交都在 `feat/<需求名>` 上完成。结束后只把该分支合入 `feature` 并推送，不操作 `master`。具体标准见第 5 节。
 
+### 何时提交
+
+改完先停下来，等审查。审查通过后，会另发一条消息要求提交。收到这条消息之前，不执行 commit。
+
 ### Commit 信息
 
 提交说明使用中文，并遵循 Conventional Commits：
@@ -274,4 +278,43 @@ git push origin feature
 不引入第二套组件库，也不手写一套和组件库平行的按钮、输入框、弹窗。组件库没有的能力，先在方案里说明，批准后再补充。
 
 去掉 hover 悬浮效果。鼠标移入时，元素保持原来的位置和大小，不向上浮起，不位移，不放大，不加阴影把元素托起来。组件自带这类悬浮时关掉，不在页面样式里再加 `:hover` 的 `transform`、`translate` 或抬起用的 `box-shadow`。
+
+## 8. 目录结构
+
+新文件按这个结构放。不要再加 `src` 包一层，也不要把环境配置拆到别的目录。
+
+```text
+backend/
+├── app/
+│   ├── api/routes/     校验入参，调用 workflow
+│   ├── agents/         定义单个 agent
+│   ├── graphs/         编排多个 agent
+│   ├── prompts/        提示词
+│   ├── tools/          agent 可执行的外部动作
+│   ├── config/         读取环境 YAML
+│   ├── db/             模型基类和数据库引擎
+│   └── users/          用户模型
+├── config/
+│   ├── dev.yaml        本机文件，不提交
+│   └── dev.yaml.example
+├── tests/
+└── pyproject.toml
+frontend/
+├── public/
+└── src/
+    ├── api/            调用后端
+    ├── assets/         图片等资源
+    ├── components/     可复用组件
+    ├── domain/         页面背后的领域逻辑
+    ├── router/         路由
+    └── views/          页面
+docs/
+├── solution/           方案
+├── plan/               计划
+├── spec/               规格
+├── summery/            总结
+└── goodCode/           值得沿用的设计
+```
+
+`backend/config/dev.yaml` 同时包含 `mysql` 和 `jwt`。同一台 MySQL 用 `database` 做开发库，用 `test_database` 做测试库。仓库只提交 `dev.yaml.example`，值为空。本机文件含密码或密钥，不提交。开发和测试都读这一份文件。
 

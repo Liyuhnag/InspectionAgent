@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref } from 'vue'
-import { BubbleList, Conversations, XSender } from 'vue-element-plus-x'
+import { BubbleList, Conversations, Prompts, Welcome, XSender } from 'vue-element-plus-x'
 import type { BubbleListItemProps } from 'vue-element-plus-x/types/BubbleList'
+import type { PromptsItemsProps } from 'vue-element-plus-x/types/Prompts'
 
 import portrait from '@/assets/ai-assistant.png'
+import assistantAvatar from '@/assets/avatar-ai.svg'
+import userAvatar from '@/assets/avatar-user.svg'
 import { preferDraft, senderText, visibleText } from '@/domain/chat/ChatSession'
 import { DialogueDesk } from '@/domain/chat/DialogueDesk'
 import { LocalTimedChunkSource, localReply } from '@/domain/chat/LocalTimedChunkSource'
@@ -29,18 +32,33 @@ const senderRef = ref<{
 } | null>(null)
 const sessionHoverStyle = { background: '#e8f2ff', transform: 'none', boxShadow: 'none' }
 const sessionActiveStyle = { background: '#d6e8ff', color: '#1677ff' }
+const starterHoverStyle = { background: '#f0f6ff', borderColor: '#1677ff' }
+const starters: PromptsItemsProps[] = [
+  { key: 'status', label: '检查设备运行状态', description: '例如：3 号泵房的阀门和压力表' },
+  { key: 'abnormal', label: '汇总今日巡检异常', description: '按区域列出异常点和处理进度' },
+  { key: 'report', label: '生成巡检报告', description: '把本次巡检结果整理成报告' },
+  { key: 'history', label: '查询历史巡检记录', description: '查看某台设备最近的巡检情况' },
+].map((item) => ({ ...item, itemHoverStyle: starterHoverStyle }))
 
 /** 把消息转成气泡列表需要的展示数据。 */
 function toBubble(message: (typeof desk.active.chat.messages)[number]): BubbleListItemProps & { key: string } {
   const content = visibleText(message.parts)
+  const fromUser = message.role === 'user'
   return {
     key: message.id,
     content,
-    placement: message.role === 'user' ? 'end' : 'start',
+    placement: fromUser ? 'end' : 'start',
     loading: message.status === 'streaming' && content.length === 0,
     shape: 'corner',
-    variant: message.role === 'user' ? 'outlined' : 'filled',
+    variant: fromUser ? 'outlined' : 'filled',
+    maxWidth: '640px',
     noStyle: false,
+    avatar: fromUser ? userAvatar : assistantAvatar,
+    avatarAlt: fromUser ? '我' : '巡检智能体',
+    avatarSize: '36px',
+    avatarGap: '12px',
+    avatarShape: 'circle',
+    avatarFit: 'cover',
   }
 }
 
@@ -104,6 +122,13 @@ function selectDialogue(item: { id?: string }): void {
   senderRef.value?.clear()
 }
 
+/** 点击首页的推荐任务，直接作为第一条消息发送。 */
+function sendStarter(item: PromptsItemsProps): void {
+  if (item.label) {
+    submitText(item.label)
+  }
+}
+
 /** 供测试直接提交一段文字。 */
 function submitText(text: string): boolean {
   const dialogue = desk.active
@@ -144,11 +169,30 @@ defineExpose({ submitText, createDialogue, desk })
       />
     </aside>
 
-    <section class="chat-pane">
+    <section class="chat-pane" :class="{ 'chat-pane--empty': desk.active.empty }">
+      <img
+        v-if="desk.active.empty"
+        class="chat-backdrop"
+        :src="portrait"
+        alt=""
+        aria-hidden="true"
+      />
       <div class="chat-stage" :class="{ 'chat-stage--empty': desk.active.empty }">
         <div v-if="desk.active.empty" class="chat-empty">
-          <p class="chat-empty-title">我是你的巡检智能体<br />我能为你做些什么</p>
-          <img class="chat-portrait" :src="portrait" alt="AI 助手" />
+          <Welcome
+            class="chat-welcome"
+            variant="borderless"
+            :icon="assistantAvatar"
+            title="你好，我是你的巡检智能体"
+            description="告诉我要巡检的设备或区域，我可以帮你核对运行状态、汇总异常，并整理成巡检报告。"
+          />
+          <Prompts
+            class="chat-starters"
+            title="可以试试这样问"
+            :items="starters"
+            wrap
+            @item-click="sendStarter"
+          />
         </div>
         <BubbleList v-else class="chat-list" :list="bubbles" />
         <p v-if="desk.active.chat.streaming" class="chat-status">正在回复</p>
@@ -225,57 +269,115 @@ defineExpose({ submitText, createDialogue, desk })
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 16px 32px 0;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 32px 0;
+  box-sizing: border-box;
+}
+
+.chat-pane--empty {
+  position: relative;
+  overflow: hidden;
+}
+
+.chat-backdrop {
+  position: absolute;
+  right: 2%;
+  top: 50%;
+  width: min(44%, 540px);
+  height: auto;
+  transform: translateY(-58%);
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(ellipse 76% 70% at 50% 42%, #000 42%, transparent 70%);
+  mask-image: radial-gradient(ellipse 76% 70% at 50% 42%, #000 42%, transparent 70%);
 }
 
 .chat-stage--empty {
-  align-items: center;
   justify-content: center;
-  padding: 0 48px 14vh;
-  background:
-    radial-gradient(ellipse 34% 42% at 62% 36%, rgba(214, 232, 255, 0.95), transparent 72%);
+  padding-bottom: 8vh;
+}
+
+.chat-pane--empty .chat-stage,
+.chat-pane--empty .chat-sender {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-pane--empty .chat-stage {
+  max-width: 640px;
+  margin-left: 6%;
+}
+
+@media (max-width: 1280px) {
+  .chat-backdrop {
+    display: none;
+  }
+
+  .chat-pane--empty .chat-stage {
+    margin-left: auto;
+  }
 }
 
 .chat-empty {
   display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding: 0 8px;
+}
+
+.chat-welcome {
+  --elx-welcome-filled-bg: transparent;
+  --elx-welcome-icon-size: 56px;
+  --elx-welcome-padding: 0;
   align-items: center;
-  justify-content: flex-end;
-  width: min(860px, 100%);
 }
 
-.chat-portrait {
-  width: min(440px, 52%);
-  height: auto;
-  flex: none;
-  display: block;
-  -webkit-mask-image: radial-gradient(ellipse 80% 78% at 50% 46%, #000 46%, transparent 74%);
-  mask-image: radial-gradient(ellipse 80% 78% at 50% 46%, #000 46%, transparent 74%);
+.chat-welcome :deep(.elx-welcome__icon) {
+  border-radius: 50%;
 }
 
-.chat-empty-title {
-  position: relative;
-  margin: 0 28px 72px 0;
-  padding: 14px 18px;
-  background: #ffffff;
-  border: 1px solid #d6e4ff;
-  border-radius: 14px;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.6;
+.chat-welcome :deep(.elx-welcome__icon .icon-image) {
+  padding: 0;
+}
+
+.chat-welcome :deep(.elx-welcome__icon .el-image__inner) {
+  object-fit: cover;
+}
+
+.chat-welcome :deep(.elx-welcome__title) {
+  font-size: 22px;
   color: #1f2a44;
 }
 
-.chat-empty-title::after {
-  content: "";
-  position: absolute;
-  right: -5px;
-  top: 22px;
-  width: 8px;
-  height: 8px;
-  background: #ffffff;
-  border-right: 1px solid #d6e4ff;
-  border-top: 1px solid #d6e4ff;
-  transform: rotate(45deg);
+.chat-welcome :deep(.elx-welcome__description) {
+  line-height: 1.7;
+  color: #5b6b88;
+}
+
+.chat-starters :deep(.elx-prompts__title) {
+  font-size: 13px;
+  color: #5b6b88;
+}
+
+.chat-starters :deep(.elx-prompts__items) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chat-starters :deep(.elx-prompts__item) {
+  border-color: #d6e4ff;
+  border-radius: 10px;
+}
+
+.chat-starters :deep(.elx-prompts__item-label) {
+  color: #1f2a44;
+}
+
+.chat-starters :deep(.elx-prompts__item-description) {
+  font-size: 13px;
+  color: #5b6b88;
 }
 
 .chat-list {
@@ -285,12 +387,16 @@ defineExpose({ submitText, createDialogue, desk })
 
 .chat-status {
   margin: 0;
-  padding: 8px 0 12px;
-  color: #1677ff;
+  padding: 8px 0 12px 48px;
+  font-size: 13px;
+  color: #5b6b88;
 }
 
 .chat-sender {
-  margin: 0 32px 24px;
+  width: calc(100% - 64px);
+  max-width: 816px;
+  margin: 0 auto 24px;
+  box-sizing: border-box;
   background: #ffffff;
   border: 1px solid #d6e4ff;
   border-radius: 12px;

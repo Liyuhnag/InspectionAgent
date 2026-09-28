@@ -12,6 +12,17 @@ vi.mock('vue-element-plus-x', () => ({
     props: ['items'],
     template: '<ul><li v-for="item in items" :key="item.id">{{ item.label }}</li></ul>',
   },
+  Prompts: {
+    name: 'Prompts',
+    props: ['items'],
+    emits: ['itemClick'],
+    template: '<ul><li v-for="item in items" :key="item.key" class="starter" @click="$emit(\'itemClick\', item)">{{ item.label }}</li></ul>',
+  },
+  Welcome: {
+    name: 'Welcome',
+    props: ['title', 'description'],
+    template: '<section class="welcome">{{ title }}</section>',
+  },
   XSender: {
     name: 'XSender',
     template: '<div />',
@@ -58,7 +69,7 @@ describe('ChatView', () => {
       submitText: (text: string) => boolean
     }
     expect(wrapper.text()).toContain('新会话')
-    expect(wrapper.find('img').attributes('alt')).toBe('AI 助手')
+    expect(wrapper.find('.welcome').text()).toContain('巡检智能体')
     expect(exposed.submitText('检查阀门')).toBe(true)
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('检查阀门')
@@ -71,7 +82,24 @@ describe('ChatView', () => {
     source.onDone?.()
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).not.toContain('正在回复')
-    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.find('.welcome').exists()).toBe(false)
+  })
+
+  it('点击首页推荐任务会直接发送', async () => {
+    const source = new ManualSource()
+    const wrapper = mount(ChatView, {
+      props: { streamSource: source },
+      global: {
+        stubs: {
+          ElButton: { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    await wrapper.find('.starter').trigger('click')
+    expect(wrapper.text()).toContain('检查设备运行状态')
+    expect(wrapper.text()).toContain('正在回复')
+    expect(wrapper.find('.welcome').exists()).toBe(false)
   })
 })
 

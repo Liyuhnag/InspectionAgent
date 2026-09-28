@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "PyMySQL",
     "PyYAML",
+    "SQLAlchemy>=2",
 ]
 
 [project.optional-dependencies]

@@ -312,6 +312,7 @@ docs/
 ├── solution/           方案
 ├── plan/               计划
 ├── spec/               规格
+├── decisions/          架构决策
 ├── summery/            总结
 └── goodCode/           值得沿用的设计
 ```

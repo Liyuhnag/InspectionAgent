@@ -292,7 +292,7 @@ backend/
 │   ├── prompts/        提示词
 │   ├── tools/          agent 可执行的外部动作
 │   ├── config/         读取环境 YAML
-│   ├── db/             模型基类和数据库引擎
+│   ├── db/             模型基类、MySQL 和 Redis 客户端
 │   └── users/          用户模型
 ├── config/
 │   ├── dev.yaml        本机文件，不提交
@@ -316,5 +316,5 @@ docs/
 └── goodCode/           值得沿用的设计
 ```
 
-`backend/config/dev.yaml` 同时包含 `mysql` 和 `jwt`。同一台 MySQL 用 `database` 做开发库，用 `test_database` 做测试库。仓库只提交 `dev.yaml.example`，值为空。本机文件含密码或密钥，不提交。开发和测试都读这一份文件。
+`backend/config/dev.yaml` 同时包含 `mysql`、`jwt` 和 `redis`。同一台 MySQL、同一台 Redis 都用 `database` 做开发库，用 `test_database` 做测试库。Redis 密码可以为空。仓库只提交 `dev.yaml.example`，值为空。本机文件含密码或密钥，不提交。开发和测试都读这一份文件。
 

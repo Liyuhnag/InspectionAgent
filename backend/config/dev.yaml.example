@@ -8,3 +8,9 @@ mysql:
 jwt:
   secret: ""
   expires_minutes:
+redis:
+  host: ""
+  port:
+  password: ""
+  database:
+  test_database:

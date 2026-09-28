@@ -8,11 +8,14 @@ dependencies = [
     "PyYAML",
     "SQLAlchemy>=2",
     "PyJWT",
+    "fastapi",
+    "redis",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "httpx",
 ]
 
 [tool.setuptools.packages.find]

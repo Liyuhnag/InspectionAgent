@@ -7,6 +7,16 @@ from app.config.settings import AppSettings
 from app.config.settings import ConfigError
 
 
+_REDIS = (
+    "redis:\n"
+    "  host: 127.0.0.1\n"
+    "  port: 6379\n"
+    "  password: \"\"\n"
+    "  database: 0\n"
+    "  test_database: 1\n"
+)
+
+
 def _write(path: Path, text: str) -> None:
     """把一段环境配置写到临时文件。"""
     path.write_text(text, encoding="utf-8")
@@ -33,7 +43,8 @@ def test_缺少_jwt_字段时读取失败(tmp_path: Path) -> None:
         "  database: inspection\n"
         "  test_database: inspection_test\n"
         "jwt:\n"
-        "  secret: key\n",
+        "  secret: key\n"
+        f"{_REDIS}",
     )
     with pytest.raises(ConfigError):
         AppSettings.load(path)
@@ -59,7 +70,8 @@ def test_同一台_mysql_使用不同的库(tmp_path: Path) -> None:
         "  test_database: inspection_test\n"
         "jwt:\n"
         "  secret: key\n"
-        "  expires_minutes: 60\n",
+        "  expires_minutes: 60\n"
+        f"{_REDIS}",
     )
     settings = AppSettings.load(path)
     test_mysql = settings.test_mysql()
@@ -71,3 +83,55 @@ def test_同一台_mysql_使用不同的库(tmp_path: Path) -> None:
     assert test_mysql.password == settings.mysql.password
     assert settings.jwt.secret == "key"
     assert settings.jwt.expires_minutes == 60
+    assert settings.redis.database == 0
+    assert settings.redis.password == ""
+
+
+def test_缺少_redis_字段时读取失败(tmp_path: Path) -> None:
+    """同一份配置里，Redis 缺字段就不能使用。"""
+    path = tmp_path / "dev.yaml"
+    _write(
+        path,
+        "mysql:\n"
+        "  host: 127.0.0.1\n"
+        "  port: 3306\n"
+        "  user: root\n"
+        "  password: secret\n"
+        "  database: inspection\n"
+        "  test_database: inspection_test\n"
+        "jwt:\n"
+        "  secret: key\n"
+        "  expires_minutes: 60\n"
+        "redis:\n"
+        "  host: 127.0.0.1\n"
+        "  port: 6379\n"
+        "  password: \"\"\n",
+    )
+    with pytest.raises(ConfigError):
+        AppSettings.load(path)
+
+
+def test_同一台_redis_使用不同的库(tmp_path: Path) -> None:
+    """开发和测试共用主机、端口和密码，只是 database 不同。"""
+    path = tmp_path / "dev.yaml"
+    _write(
+        path,
+        "mysql:\n"
+        "  host: 127.0.0.1\n"
+        "  port: 3306\n"
+        "  user: root\n"
+        "  password: secret\n"
+        "  database: inspection\n"
+        "  test_database: inspection_test\n"
+        "jwt:\n"
+        "  secret: key\n"
+        "  expires_minutes: 60\n"
+        f"{_REDIS}",
+    )
+    settings = AppSettings.load(path)
+    test_redis = settings.test_redis()
+    assert settings.redis.database == 0
+    assert test_redis.database == 1
+    assert test_redis.host == settings.redis.host
+    assert test_redis.port == settings.redis.port
+    assert test_redis.password == settings.redis.password

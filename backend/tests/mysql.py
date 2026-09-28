@@ -9,7 +9,7 @@ from app.config.settings import AppSettings
 from app.config.settings import ConfigError
 from app.config.settings import MysqlSettings
 from app.config.settings import DEV_CONFIG
-from app.db.engine import mysql_engine
+from app.db.mysql import mysql_engine
 
 
 def open_test_database() -> tuple[MysqlSettings, Engine]:

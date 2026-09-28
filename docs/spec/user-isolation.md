@@ -6,7 +6,7 @@
 
 注册：
 
-- 发送验证码时，按用户名生成验证码并写入日志。响应只有「已发送」，不含验证码。用户名已注册则拒绝。
+- 发送验证码时，按用户名生成验证码，写入 Redis，并写入日志。响应只有「已发送」，不含验证码。用户名已注册则拒绝。
 - 提交用户名、密码、验证码。验证码正确才写入用户。验证码错误或用户名已存在则拒绝，不写入。
 
 登录：
@@ -26,7 +26,7 @@
 
 配置文件：
 
-- `backend/config/dev.yaml`：`mysql` 与 `jwt` 写在同一个文件。数据库字段为 `host`、`port`、`user`、`password`、`database`、`test_database`。JWT 字段为 `secret`、`expires_minutes`。`database` 是开发库，`test_database` 是同一台 MySQL 上的测试库。
+- `backend/config/dev.yaml`：`mysql`、`jwt` 与 `redis` 写在同一个文件。数据库字段为 `host`、`port`、`user`、`password`、`database`、`test_database`。JWT 字段为 `secret`、`expires_minutes`。Redis 字段为 `host`、`port`、`password`、`database`、`test_database`。`database` 是开发库，`test_database` 是同一台实例上的测试库。Redis 密码可以为空。
 - 缺文件或缺字段则读取失败。仓库只提交 `dev.yaml.example`，值为空。本机文件不提交。
 
 用户表由用户模型创建。用户名唯一。列包含用户名、盐、密码加密结果。创建、读取、更新、删除使用模型上的方法。

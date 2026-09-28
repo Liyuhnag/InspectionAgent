@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""读取开发配置。测试和开发共用同一台 MySQL，只是 database 不同。"""
+"""读取开发配置。测试和开发共用同一台 MySQL 和同一台 Redis，只是库不同。"""
 
 from pathlib import Path
 
@@ -34,14 +34,34 @@ class JwtSettings:
         self.expires_minutes = expires_minutes
 
 
-class AppSettings:
-    """开发配置。数据库和 JWT 写在同一个文件里。"""
+class RedisSettings:
+    """Redis 连接参数。"""
 
-    def __init__(self, mysql: MysqlSettings, test_database: str, jwt: JwtSettings) -> None:
-        """保存开发库、测试库名和 JWT 参数。"""
+    def __init__(self, host: str, port: int, password: str, database: int) -> None:
+        """保存已经校验过的连接参数。密码可以为空。"""
+        self.host = host
+        self.port = port
+        self.password = password
+        self.database = database
+
+
+class AppSettings:
+    """开发配置。数据库、Redis 和 JWT 写在同一个文件里。"""
+
+    def __init__(
+        self,
+        mysql: MysqlSettings,
+        test_database: str,
+        jwt: JwtSettings,
+        redis: RedisSettings,
+        test_redis_database: int,
+    ) -> None:
+        """保存开发库、测试库和 JWT 参数。"""
         self.mysql = mysql
         self.jwt = jwt
+        self.redis = redis
         self._test_database = test_database
+        self._test_redis_database = test_redis_database
 
     def test_mysql(self) -> MysqlSettings:
         """同一台 MySQL 上的测试库。主机、端口、账号与开发库相同。"""
@@ -53,14 +73,27 @@ class AppSettings:
             password=self.mysql.password,
         )
 
+    def test_redis(self) -> RedisSettings:
+        """同一台 Redis 上的测试库。主机、端口、密码与开发库相同。"""
+        return RedisSettings(
+            host=self.redis.host,
+            port=self.redis.port,
+            password=self.redis.password,
+            database=self._test_redis_database,
+        )
+
     @classmethod
     def load(cls, path: Path) -> "AppSettings":
         """读取开发配置。缺文件或缺字段时失败。"""
         data = _read_mapping(path)
         mysql_data = _section(data, "mysql")
         jwt_data = _section(data, "jwt")
+        redis_data = _section(data, "redis")
         _require(mysql_data, ("host", "port", "user", "password", "database", "test_database"))
         _require(jwt_data, ("secret", "expires_minutes"))
+        _require(redis_data, ("host", "port", "database", "test_database"))
+        if "password" not in redis_data or redis_data["password"] is None:
+            raise ConfigError("缺少配置字段：password")
         return cls(
             mysql=MysqlSettings(
                 host=str(mysql_data["host"]),
@@ -74,6 +107,13 @@ class AppSettings:
                 secret=str(jwt_data["secret"]),
                 expires_minutes=int(jwt_data["expires_minutes"]),
             ),
+            redis=RedisSettings(
+                host=str(redis_data["host"]),
+                port=int(redis_data["port"]),
+                password=str(redis_data["password"]),
+                database=int(redis_data["database"]),
+            ),
+            test_redis_database=int(redis_data["test_database"]),
         )
 
 

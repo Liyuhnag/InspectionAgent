@@ -27,3 +27,6 @@ credentials.json
 secrets.json
 
 backend/config/dev.yaml
+
+# Deprecated BKUI tooling metadata
+.bkui-knowledge.json

@@ -9,8 +9,9 @@ import assistantAvatar from '@/assets/avatar-ai.svg'
 import userAvatar from '@/assets/avatar-user.svg'
 import { preferDraft, senderText, visibleText } from '@/domain/chat/ChatSession'
 import { DialogueDesk } from '@/domain/chat/DialogueDesk'
-import { LocalTimedChunkSource, localReply } from '@/domain/chat/LocalTimedChunkSource'
+import { renderMarkdown } from '@/domain/chat/renderMarkdown'
 import { SequenceId } from '@/domain/chat/SequenceId'
+import { SseChunkSource } from '@/domain/chat/SseChunkSource'
 import type { TextChunkSource } from '@/domain/chat/types'
 
 const props = withDefaults(
@@ -26,7 +27,7 @@ const props = withDefaults(
 
 const collapsed = ref(false)
 const ids = new SequenceId()
-const source = props.streamSource ?? new LocalTimedChunkSource(localReply)
+const source = props.streamSource ?? new SseChunkSource()
 const desk = reactive(new DialogueDesk(source, () => ids.next()))
 const senderRef = ref<{
   getModelValue: () => { text?: string }
@@ -44,7 +45,9 @@ const starters: PromptsItemsProps[] = [
 ].map((item) => ({ ...item, itemHoverStyle: starterHoverStyle }))
 
 /** 把消息转成气泡列表需要的展示数据。 */
-function toBubble(message: (typeof desk.active.chat.messages)[number]): BubbleListItemProps & { key: string } {
+function toBubble(
+  message: (typeof desk.active.chat.messages)[number],
+): BubbleListItemProps & { key: string; plain: boolean } {
   const content = visibleText(message.parts)
   const fromUser = message.role === 'user'
   return {
@@ -62,6 +65,7 @@ function toBubble(message: (typeof desk.active.chat.messages)[number]): BubbleLi
     avatarGap: '12px',
     avatarShape: 'circle',
     avatarFit: 'cover',
+    plain: fromUser,
   }
 }
 
@@ -218,7 +222,12 @@ defineExpose({ submitText, createDialogue, desk })
             @item-click="sendStarter"
           />
         </div>
-        <BubbleList v-else class="chat-list" :list="bubbles" />
+        <BubbleList v-else class="chat-list" :list="bubbles">
+          <template #content="{ item }">
+            <span v-if="item.plain">{{ item.content }}</span>
+            <div v-else class="bubble-md" v-html="renderMarkdown(item.content ?? '')" />
+          </template>
+        </BubbleList>
         <p v-if="desk.active.chat.streaming" class="chat-status">正在回复</p>
         <p v-else-if="failed" class="chat-status">回复中断，可以再次发送</p>
       </div>
@@ -540,6 +549,51 @@ defineExpose({ submitText, createDialogue, desk })
   background: #ffffff;
   color: #1f2a44;
   border: 1px solid #d6e4ff;
+}
+
+.bubble-md :deep(p),
+.bubble-md :deep(ul),
+.bubble-md :deep(ol),
+.bubble-md :deep(pre) {
+  margin: 0 0 8px;
+}
+
+.bubble-md :deep(p:last-child),
+.bubble-md :deep(ul:last-child),
+.bubble-md :deep(ol:last-child),
+.bubble-md :deep(pre:last-child) {
+  margin-bottom: 0;
+}
+
+.bubble-md :deep(ul),
+.bubble-md :deep(ol) {
+  padding-left: 1.2em;
+}
+
+.bubble-md :deep(h1),
+.bubble-md :deep(h2),
+.bubble-md :deep(h3) {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.bubble-md :deep(code) {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #f5f8ff;
+}
+
+.bubble-md :deep(pre) {
+  overflow: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f5f8ff;
+}
+
+.bubble-md :deep(pre code) {
+  padding: 0;
+  background: transparent;
 }
 
 .chat-shell :deep(*:hover) {

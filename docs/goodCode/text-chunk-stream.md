@@ -2,7 +2,7 @@
 
 ## 要解决的变化点
 
-助手回复现在由本地定时切段产生，以后会改成接口返回的数据块。页面不能因为来源变化而改成“每段新建一条消息”。
+助手回复可以由本地定时切段产生，也可以由后端 SSE 产生。页面不能因为来源变化而改成“每段新建一条消息”。
 
 ## 使用的设计
 
@@ -13,6 +13,7 @@
 - `frontend/src/domain/chat/types.ts` 中的 `TextChunkSource`
 - `frontend/src/domain/chat/ChatSession.ts` 中的 `send`、`appendChunk`
 - `frontend/src/domain/chat/LocalTimedChunkSource.ts`
+- `frontend/src/domain/chat/SseChunkSource.ts`：聊天页默认使用的后端事件流
 
 ## 以后怎么扩展
 

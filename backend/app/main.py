@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""应用入口。启动时建用户表，并挂上注册和登录接口。"""
+"""应用入口。启动时建用户表，并挂上注册、登录和模拟回复接口。"""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,7 @@ from sqlalchemy.engine import Engine
 
 from app.api.auth import AuthMiddleware
 from app.api.routes.register import register_router
+from app.api.routes.replies import replies_router
 from app.api.routes.session import session_router
 from app.config.settings import DEV_CONFIG
 from app.config.settings import AppSettings
@@ -48,4 +49,5 @@ def create_app(
     )
     app.include_router(register_router(Registration(engine, codes)))
     app.include_router(session_router(login))
+    app.include_router(replies_router())
     return app

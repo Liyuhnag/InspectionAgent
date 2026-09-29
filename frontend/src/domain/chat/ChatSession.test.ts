@@ -12,17 +12,21 @@ class ManualSource implements TextChunkSource {
 
   onError: ((reason: Error) => void) | null = null
 
+  sessionId = ''
+
   starts = 0
 
   stopped = 0
 
   /** 记下回调，交给测试手动推进。 */
   start(
+    sessionId: string,
     _input: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,
     onError: (reason: Error) => void,
   ): void {
+    this.sessionId = sessionId
     this.starts += 1
     this.onChunk = onChunk
     this.onDone = onDone
@@ -39,7 +43,7 @@ describe('ChatSession', () => {
   it('把助手回复逐段写入同一条消息', () => {
     const source = new ManualSource()
     const ids = new SequenceId()
-    const tracked = new ChatSession(source, () => ids.next())
+    const tracked = new ChatSession(source, () => ids.next(), 'server-session')
 
     expect(tracked.send('  巡检记录  ')).toBe(true)
     expect(tracked.messages).toHaveLength(2)
@@ -49,6 +53,8 @@ describe('ChatSession', () => {
     })
     expect(visibleText(tracked.messages[0].parts)).toBe('巡检记录')
     expect(tracked.messages[1].status).toBe('streaming')
+    expect(source.sessionId).toBe('server-session')
+    expect(tracked.messages[0].traceStatus).toBe('running')
 
     source.onChunk?.('已收')
     source.onChunk?.('到。')
@@ -57,6 +63,7 @@ describe('ChatSession', () => {
 
     source.onDone?.()
     expect(tracked.messages[1].status).toBe('complete')
+    expect(tracked.messages[0].traceStatus).toBe('complete')
     expect(tracked.streaming).toBe(false)
     expect(tracked.send('下一条')).toBe(true)
   })
@@ -87,6 +94,7 @@ describe('ChatSession', () => {
 
     expect(session.messages[1].status).toBe('error')
     expect(visibleText(session.messages[1].parts)).toBe('部分')
+    expect(session.messages[0].traceStatus).toBe('failed')
     expect(session.streaming).toBe(false)
     expect(session.send('重试')).toBe(true)
   })
@@ -107,6 +115,31 @@ describe('ChatSession', () => {
     ])
     expect(text).toBe('可见')
   })
+
+  it('从持久化 Trace 恢复用户输入和状态，不恢复助手正文', () => {
+    const source = new ManualSource()
+    const ids = new SequenceId()
+    const session = new ChatSession(source, () => ids.next(), 'server-session')
+
+    session.restoreTraces([
+      {
+        id: 'trace-1',
+        user_text: '第一轮',
+        status: 'complete',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: 'trace-2',
+        user_text: '第二轮',
+        status: 'failed',
+        created_at: '2026-01-01T00:01:00Z',
+      },
+    ])
+
+    expect(session.messages).toHaveLength(2)
+    expect(session.messages.map((message) => visibleText(message.parts))).toEqual(['第一轮', '第二轮'])
+    expect(session.messages.map((message) => message.traceStatus)).toEqual(['complete', 'failed'])
+  })
 })
 
 describe('LocalTimedChunkSource', () => {
@@ -117,6 +150,7 @@ describe('LocalTimedChunkSource', () => {
     const source = new LocalTimedChunkSource(localReply, 80, 4)
 
     source.start(
+      '',
       '阀门',
       (chunk) => chunks.push(chunk),
       () => {

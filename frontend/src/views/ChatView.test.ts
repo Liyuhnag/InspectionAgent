@@ -5,7 +5,7 @@ vi.mock('vue-element-plus-x', () => ({
   BubbleList: {
     name: 'BubbleList',
     props: ['list'],
-    template: '<ul><li v-for="item in list" :key="item.key">{{ item.content }}</li></ul>',
+    template: '<ul><li v-for="item in list" :key="item.key"><slot name="content" :item="item">{{ item.content }}</slot></li></ul>',
   },
   Conversations: {
     name: 'Conversations',
@@ -33,12 +33,18 @@ vi.mock('vue-element-plus-x', () => ({
 vi.mock('@/api/chatSessions', () => ({
   createChatSession: vi.fn(),
   getChatSession: vi.fn(),
+  listChatSessionTraces: vi.fn(),
   listChatSessions: vi.fn(),
 }))
 
 import { SequenceId } from '@/domain/chat/SequenceId'
 import type { TextChunkSource } from '@/domain/chat/types'
-import { createChatSession, getChatSession, listChatSessions } from '@/api/chatSessions'
+import {
+  createChatSession,
+  getChatSession,
+  listChatSessionTraces,
+  listChatSessions,
+} from '@/api/chatSessions'
 import ChatView from '@/views/ChatView.vue'
 
 const firstSession = { id: 'session-1', title: '新会话', updated_at: '2026-01-01T00:00:00Z' }
@@ -63,6 +69,7 @@ class ManualSource implements TextChunkSource {
 
   /** 保存回调。 */
   start(
+    _sessionId: string,
     _input: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,
@@ -79,6 +86,7 @@ class ManualSource implements TextChunkSource {
 describe('ChatView', () => {
   beforeEach(() => {
     vi.mocked(listChatSessions).mockReset().mockResolvedValue({ sessions: [firstSession] })
+    vi.mocked(listChatSessionTraces).mockReset().mockResolvedValue({ traces: [] })
     vi.mocked(createChatSession).mockReset().mockResolvedValue({
       id: 'session-2',
       title: '新会话',
@@ -175,6 +183,21 @@ describe('ChatView', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('正在加载会话')
     expect(wrapper.text()).toContain('新会话')
+  })
+
+  it('重新打开会话时恢复用户输入和 Trace 状态', async () => {
+    vi.mocked(listChatSessionTraces).mockResolvedValue({
+      traces: [{
+        id: 'trace-1',
+        user_text: '检查 1 号线压力',
+        status: 'failed',
+        created_at: '2026-01-01T00:00:00Z',
+      }],
+    })
+    const wrapper = await mountChat()
+
+    expect(wrapper.text()).toContain('检查 1 号线压力')
+    expect(wrapper.text()).toContain('回复失败')
   })
 })
 

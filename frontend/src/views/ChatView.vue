@@ -7,13 +7,18 @@ import type { PromptsItemsProps } from 'vue-element-plus-x/types/Prompts'
 import portrait from '@/assets/ai-assistant.png'
 import assistantAvatar from '@/assets/avatar-ai.svg'
 import userAvatar from '@/assets/avatar-user.svg'
-import { createChatSession, getChatSession, listChatSessions } from '@/api/chatSessions'
+import {
+  createChatSession,
+  getChatSession,
+  listChatSessionTraces,
+  listChatSessions,
+} from '@/api/chatSessions'
 import { preferDraft, senderText, visibleText } from '@/domain/chat/ChatSession'
 import { DialogueDesk } from '@/domain/chat/DialogueDesk'
 import { renderMarkdown } from '@/domain/chat/renderMarkdown'
 import { SequenceId } from '@/domain/chat/SequenceId'
 import { SseChunkSource } from '@/domain/chat/SseChunkSource'
-import type { TextChunkSource } from '@/domain/chat/types'
+import type { TextChunkSource, TraceStatus } from '@/domain/chat/types'
 
 const props = withDefaults(
   defineProps<{
@@ -52,7 +57,7 @@ const starters: PromptsItemsProps[] = [
 /** 把消息转成气泡列表需要的展示数据。 */
 function toBubble(
   message: (typeof desk.active.chat.messages)[number],
-): BubbleListItemProps & { key: string; plain: boolean } {
+): BubbleListItemProps & { key: string; plain: boolean; traceStatus?: TraceStatus } {
   const content = visibleText(message.parts)
   const fromUser = message.role === 'user'
   return {
@@ -71,6 +76,7 @@ function toBubble(
     avatarShape: 'circle',
     avatarFit: 'cover',
     plain: fromUser,
+    traceStatus: message.traceStatus,
   }
 }
 
@@ -97,8 +103,10 @@ async function loadSessions(): Promise<void> {
   try {
     const response = await listChatSessions()
     const sessions = response.sessions.length ? response.sessions : [await createChatSession()]
+    const tracesResponse = await listChatSessionTraces(sessions[0].id)
     if (requestId === selectionRequest) {
       desk.load(sessions)
+      desk.loadTraces(sessions[0].id, tracesResponse.traces)
     }
   } catch (error) {
     if (requestId === selectionRequest) {
@@ -143,6 +151,7 @@ function submitDraft(): void {
   if (!accepted) {
     return
   }
+  dialogue.nameFrom(text)
   sessionError.value = ''
   senderRef.value?.clear()
 }
@@ -175,9 +184,16 @@ async function selectDialogue(item: { id?: string }): Promise<void> {
   sessionBusy.value = true
   try {
     const selected = await getChatSession(item.id)
+    const existing = desk.dialogues.find((dialogue) => dialogue.id === selected.id)
+    const traces = existing?.tracesLoaded
+      ? null
+      : (await listChatSessionTraces(selected.id)).traces
     if (requestId === selectionRequest) {
       desk.select(selected.id)
       desk.active.title = selected.title
+      if (traces) {
+        desk.loadTraces(selected.id, traces)
+      }
       senderRef.value?.clear()
     }
   } catch (error) {
@@ -206,6 +222,7 @@ function submitText(text: string): boolean {
   }
   const accepted = dialogue.chat.send(text)
   if (accepted) {
+    dialogue.nameFrom(text)
     sessionError.value = ''
   }
   return accepted
@@ -214,6 +231,17 @@ function submitText(text: string): boolean {
 /** 把异常整理为会话操作的提示文字。 */
 function _errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+/** 把持久化 Trace 状态转成用户可读文字。 */
+function traceStatusLabel(status?: TraceStatus): string {
+  if (status === 'running') {
+    return '回复进行中'
+  }
+  if (status === 'complete') {
+    return '回复已完成'
+  }
+  return status === 'failed' ? '回复失败' : ''
 }
 
 onMounted(() => {
@@ -307,7 +335,12 @@ defineExpose({ submitText, createDialogue, loadSessions, desk })
         </div>
         <BubbleList v-else class="chat-list" :list="bubbles">
           <template #content="{ item }">
-            <span v-if="item.plain">{{ item.content }}</span>
+            <div v-if="item.plain" class="bubble-user-content">
+              <span>{{ item.content }}</span>
+              <small v-if="item.traceStatus" class="bubble-trace-status">
+                {{ traceStatusLabel(item.traceStatus) }}
+              </small>
+            </div>
             <div v-else class="bubble-md" v-html="renderMarkdown(item.content ?? '')" />
           </template>
         </BubbleList>
@@ -632,6 +665,18 @@ defineExpose({ submitText, createDialogue, loadSessions, desk })
   background: #ffffff;
   color: #1f2a44;
   border: 1px solid #d6e4ff;
+}
+
+.bubble-user-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bubble-trace-status {
+  align-self: flex-end;
+  color: rgb(255 255 255 / 78%);
+  font-size: 11px;
 }
 
 .bubble-md :deep(p),

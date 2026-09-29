@@ -1,4 +1,5 @@
 import { ApiError, readToken } from './session'
+import type { PersistedTrace } from '@/domain/chat/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
 
@@ -10,6 +11,10 @@ export interface ChatSessionRecord {
 
 export interface ChatSessionList {
   sessions: ChatSessionRecord[]
+}
+
+export interface ChatTraceList {
+  traces: PersistedTrace[]
 }
 
 /** 读取当前用户的持久化会话列表。 */
@@ -27,6 +32,28 @@ export async function getChatSession(id: string): Promise<ChatSessionRecord> {
   return parse<ChatSessionRecord>(await request('GET', `/chat-sessions/${encodeURIComponent(id)}`))
 }
 
+/** 读取会话内已持久化的用户输入和 Trace 状态。 */
+export async function listChatSessionTraces(sessionId: string): Promise<ChatTraceList> {
+  return parse<ChatTraceList>(await request(
+    'GET',
+    `/chat-sessions/${encodeURIComponent(sessionId)}/traces`,
+  ))
+}
+
+/** 打开指定会话的一轮回复事件流。 */
+export function openChatSessionReply(
+  sessionId: string,
+  text: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  return request(
+    'POST',
+    `/chat-sessions/${encodeURIComponent(sessionId)}/replies`,
+    { text },
+    signal,
+  )
+}
+
 /** 保存当前用户会话的新标题。 */
 export async function renameChatSession(id: string, title: string): Promise<ChatSessionRecord> {
   return parse<ChatSessionRecord>(await request(
@@ -37,7 +64,12 @@ export async function renameChatSession(id: string, title: string): Promise<Chat
 }
 
 /** 发送带 satoken 的聊天会话请求。 */
-async function request(method: string, path: string, body?: object): Promise<Response> {
+async function request(
+  method: string,
+  path: string,
+  body?: object,
+  signal?: AbortSignal,
+): Promise<Response> {
   const headers = new Headers()
   const token = readToken()
   if (token) {
@@ -50,6 +82,7 @@ async function request(method: string, path: string, body?: object): Promise<Res
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   })
 }
 

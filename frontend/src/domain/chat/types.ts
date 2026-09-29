@@ -10,6 +10,16 @@ export type MessageStatus = 'complete' | 'streaming' | 'waiting_human' | 'error'
 
 export type MessageRole = 'user' | 'assistant'
 
+export type TraceStatus = 'running' | 'complete' | 'failed'
+
+/** 后端持久化的一轮用户输入。 */
+export interface PersistedTrace {
+  id: string
+  user_text: string
+  status: TraceStatus
+  created_at: string
+}
+
 /** 消息上的一个片段。非文本片段留给后续能力，这次不展示。 */
 export interface MessagePart {
   type: MessagePartType
@@ -22,6 +32,7 @@ export interface ChatMessage {
   role: MessageRole
   status: MessageStatus
   parts: MessagePart[]
+  traceStatus?: TraceStatus
 }
 
 /** 可替换的文本流。本地间隔输出和以后的接口数据块都走这个入口。 */
@@ -30,6 +41,7 @@ export interface TextChunkSource {
    * 开始输出。每到一段调用 onChunk，结束调用 onDone，失败调用 onError。
    */
   start(
+    sessionId: string,
     input: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,

@@ -43,6 +43,36 @@
 - 不增加标题编辑 UI；本阶段提供后端接口和前端 API 调用能力。
 - 不改变登录用的 `/session`、鉴权排除名单、聊天气泡样式和侧栏收起展开行为。
 
+## 第 3 步：Trace 建模实施计划
+
+### 采用的方案
+
+采用已批准的三表结构。`Trace` 继承 `CrudModel`，记录会话、用户输入、状态和创建时间。新增 `ChatReplyService` 承接 Trace 创建、会话标题和更新时间的同一事务，以及 SSE 流结束或中断后的状态转换；这些操作跨越会话和 Trace 两个模型，因此由 Service 统一协调。路由负责鉴权身份、入参校验和响应。
+
+### 改动目录和模块
+
+- `backend/app/chats/trace.py`：声明 Trace 表和按会话读取 Trace 的查询。
+- `backend/app/chats/chat_reply.py`：原子创建 running Trace、更新会话标题和更新时间；管理回复流与 Trace 状态。
+- `backend/app/api/routes/traces.py`：提供会话内 Trace 列表和 SSE 回复接口。
+- `backend/app/main.py`：删除旧 `/replies` 路由，创建 Trace 表并注册新路由。
+- `backend/scripts/create_database.py`：将 Trace 表加入开发库与测试库初始化。
+- `backend/tests/`：测试 Trace 正常完成、输入校验、跨用户隔离、首轮和手动标题规则，以及流中断后的 failed 状态。
+- `frontend/src/api/`：增加 Trace 列表读取与会话回复流请求，删除旧 `/replies` 请求。
+- `frontend/src/domain/chat/`、`frontend/src/views/`：将会话编号传入流来源；打开会话时恢复用户输入和 Trace 状态，流完成或失败时更新前端状态。
+
+### 实施步骤
+
+1. 新增 Trace 模型和数据库初始化接入。Trace 表含 `id`、`session_id`、`user_text`、`status` 和 `created_at`，状态限定为 `running`、`complete`、`failed`。
+2. 新增 `GET /chat-sessions/{id}/traces` 和 `POST /chat-sessions/{id}/replies`。先验证会话归属并原子创建 Trace；首轮时生成标题，手动标题保持不变；成功结束标为 complete，流错误或取消标为 failed。
+3. 将前端 SSE 请求绑定当前会话 ID；读取 Trace 列表，在页面恢复各轮用户输入和状态；删除旧 `POST /replies`。
+4. 运行 Trace 相关后端和前端测试及现有回归，之后停下等审查，不提交；审查通过并收到提交指示后再提交本步骤。
+
+### 不做的内容
+
+- 不创建或写入 Span；助手正文不持久化。
+- 不实现真实模型调用、Agent 或 Graph 流程。
+- 不改变登录、注册、会话改名 API 或气泡布局。
+
 ## 采用的方案
 
 方案 A。见 `docs/solution/session-trace-span.md`。

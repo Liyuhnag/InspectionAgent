@@ -1,9 +1,11 @@
 import { ChatSession } from './ChatSession'
-import type { TextChunkSource } from './types'
+import type { PersistedTrace, TextChunkSource } from './types'
 
 /** 一次会话，包含标题和自己的消息。 */
 export class Dialogue {
   title = '新会话'
+
+  tracesLoaded = false
 
   /** 创建本地对话状态并绑定消息来源。 */
   constructor(
@@ -57,9 +59,10 @@ export class DialogueDesk {
   /** 新建空会话并立刻选中。 */
   create(): Dialogue {
     this.abortActive()
+    const id = this.nextId()
     const dialogue = new Dialogue(
-      this.nextId(),
-      new ChatSession(this.source, this.nextId),
+      id,
+      new ChatSession(this.source, this.nextId, id),
     )
     this.dialogues.unshift(dialogue)
     this.activeId = dialogue.id
@@ -71,7 +74,11 @@ export class DialogueDesk {
     this.abortActive()
     this.dialogues.splice(0)
     for (const item of sessions) {
-      const dialogue = new Dialogue(item.id, new ChatSession(this.source, this.nextId), item.title)
+      const dialogue = new Dialogue(
+        item.id,
+        new ChatSession(this.source, this.nextId, item.id),
+        item.title,
+      )
       this.dialogues.push(dialogue)
     }
     this.activeId = sessions[0]?.id ?? ''
@@ -80,10 +87,21 @@ export class DialogueDesk {
   /** 将新建的服务端会话加入列表并选中。 */
   add(id: string, title: string): Dialogue {
     this.abortActive()
-    const dialogue = new Dialogue(id, new ChatSession(this.source, this.nextId), title)
+    const dialogue = new Dialogue(id, new ChatSession(this.source, this.nextId, id), title)
+    dialogue.tracesLoaded = true
     this.dialogues.unshift(dialogue)
     this.activeId = dialogue.id
     return dialogue
+  }
+
+  /** 将服务端 Trace 恢复成会话里的用户输入和状态。 */
+  loadTraces(id: string, traces: readonly PersistedTrace[]): void {
+    const dialogue = this.dialogues.find((item) => item.id === id)
+    if (!dialogue) {
+      return
+    }
+    dialogue.chat.restoreTraces(traces)
+    dialogue.tracesLoaded = true
   }
 
   /** 切换会话。正在输出时先中断当前回复。 */

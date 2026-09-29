@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""应用入口。启动时创建用户和聊天会话表，并挂上业务接口。"""
+"""应用入口。启动时创建用户、聊天会话和 Trace 表，并挂上业务接口。"""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,9 +9,11 @@ from sqlalchemy.engine import Engine
 from app.api.auth import AuthMiddleware
 from app.api.routes.chat_sessions import chat_sessions_router
 from app.api.routes.register import register_router
-from app.api.routes.replies import replies_router
 from app.api.routes.session import session_router
+from app.api.routes.traces import traces_router
+from app.chats.chat_reply import ChatReplyService
 from app.chats.chat_session import ChatSession
+from app.chats.trace import Trace
 from app.config.settings import DEV_CONFIG
 from app.config.settings import AppSettings
 from app.db.mysql import mysql_engine
@@ -40,7 +42,9 @@ def create_app(
         session_ttl_seconds = settings.jwt.expires_minutes * 60
     User.create_table(engine)
     ChatSession.create_table(engine)
+    Trace.create_table(engine)
     login = Login(engine, codes, session_ttl_seconds)
+    replies = ChatReplyService(engine)
     app = FastAPI()
     app.add_middleware(AuthMiddleware, login=login)
     app.add_middleware(
@@ -53,5 +57,5 @@ def create_app(
     app.include_router(register_router(Registration(engine, codes)))
     app.include_router(session_router(login))
     app.include_router(chat_sessions_router(engine))
-    app.include_router(replies_router())
+    app.include_router(traces_router(engine, replies))
     return app

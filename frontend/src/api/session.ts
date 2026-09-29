@@ -61,11 +61,6 @@ export async function logout(): Promise<void> {
   clearToken()
 }
 
-/** 打开模拟回复的事件流。调用方用 signal 中断。 */
-export function openReply(text: string, signal: AbortSignal): Promise<Response> {
-  return request('POST', '/replies', { text }, signal)
-}
-
 async function request(method: string, path: string, body?: object, signal?: AbortSignal): Promise<Response> {
   const headers = new Headers()
   const token = readToken()

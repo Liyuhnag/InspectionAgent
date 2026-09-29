@@ -11,6 +11,7 @@ class ManualSource implements TextChunkSource {
 
   /** 保存回调。 */
   start(
+    _sessionId: string,
     _input: string,
     onChunk: (chunk: string) => void,
     _onDone: () => void,
@@ -55,6 +56,16 @@ describe('DialogueDesk', () => {
     expect(desk.dialogues.map((item) => item.id)).toEqual(['server-1', 'server-2'])
     expect(desk.activeId).toBe('server-1')
     expect(desk.active.title).toBe('第一条')
+    desk.loadTraces('server-1', [
+      {
+        id: 'trace-1',
+        user_text: '恢复的请求',
+        status: 'complete',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ])
+    expect(desk.active.chat.messages[0].parts[0].text).toBe('恢复的请求')
+    expect(desk.active.tracesLoaded).toBe(true)
 
     const created = desk.add('server-3', '新会话')
     expect(desk.activeId).toBe('server-3')

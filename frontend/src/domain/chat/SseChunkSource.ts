@@ -1,4 +1,4 @@
-import { openReply } from '@/api/session'
+import { openChatSessionReply } from '@/api/chatSessions'
 
 import type { TextChunkSource } from './types'
 
@@ -18,6 +18,7 @@ export class SseChunkSource implements TextChunkSource {
 
   /** 开始读取事件流。 */
   start(
+    sessionId: string,
     input: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,
@@ -27,7 +28,7 @@ export class SseChunkSource implements TextChunkSource {
     this.finished = false
     const controller = new AbortController()
     this.controller = controller
-    void this.read(input, controller, onChunk, onDone, onError)
+    void this.read(sessionId, input, controller, onChunk, onDone, onError)
   }
 
   /** 取消尚未结束的请求。 */
@@ -38,6 +39,7 @@ export class SseChunkSource implements TextChunkSource {
 
   /** 读取响应并按事件回调。连接中断且尚未结束时视为失败。 */
   private async read(
+    sessionId: string,
     input: string,
     controller: AbortController,
     onChunk: (chunk: string) => void,
@@ -45,7 +47,7 @@ export class SseChunkSource implements TextChunkSource {
     onError: (reason: Error) => void,
   ): Promise<void> {
     try {
-      const response = await openReply(input, controller.signal)
+      const response = await openChatSessionReply(sessionId, input, controller.signal)
       if (!response.ok || !response.body) {
         this.fail(onError, new Error('回复失败'))
         return

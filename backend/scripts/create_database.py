@@ -8,6 +8,7 @@ from sqlalchemy import URL
 from sqlalchemy.schema import CreateSchema
 
 from app.chats.chat_session import ChatSession
+from app.chats.trace import Trace
 from app.config.settings import AppSettings
 from app.config.settings import DEV_CONFIG
 from app.config.settings import MysqlSettings
@@ -30,6 +31,7 @@ class DatabaseCreator:
         try:
             User.create_table(engine)
             ChatSession.create_table(engine)
+            Trace.create_table(engine)
         finally:
             engine.dispose()
         return mysql.database

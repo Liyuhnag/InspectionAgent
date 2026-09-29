@@ -26,6 +26,7 @@
 - 路由位于 `backend/app/api/routes/chat_sessions.py`，只校验改名请求、读取鉴权用户名、调用模型方法并组织 HTTP 响应。数据库连接沿用现有 `Engine` 和 `Session` 用法。
 - `create_app` 启动时在 `User` 表之后创建 `chat_sessions` 表，并注册路由。聊天接口不加入公开路由名单。
 - `backend/scripts/create_database.py` 必须要求显式传入 `--target development` 或 `--target test`。脚本从 `backend/config/dev.yaml` 读取配置，在服务器连接上用 `CREATE DATABASE IF NOT EXISTS` 创建所选库，然后在所选库中幂等创建 `users` 与 `chat_sessions` 表。脚本重复运行不得删除或重置数据，也不得输出凭据。
+- 第 3 步在应用启动和初始化脚本中增加 `traces` 表，确保先创建 `chat_sessions` 再创建 `traces`。
 - 前端 API 位于 `frontend/src/api/chatSessions.ts`，请求沿用现有 `satoken`，并提供会话改名调用。聊天页初始化时拉取列表；若列表为空则创建一条空会话。新建和切换操作使用服务端返回的 ID。加载或创建失败时显示错误状态，不显示一个伪装成已保存的本地会话。本阶段不增加标题编辑控件。
 
 ### 验收标准
@@ -45,6 +46,16 @@
 - 前端 API 为请求附加 `satoken`，正确解析列表、创建、单项读取和改名响应；改名请求使用 `PATCH` 并只提交 `title`。
 - 前端页面初始化加载会话、空列表自动创建、新建、切换，以及列表或创建失败时的错误状态。
 - 回归既有会话交互、登录、注册、SSE 与聊天气泡用例。
+
+## 第 3 步：Trace 行为规格
+
+- `traces` 表含 `id VARCHAR(32)` 主键、`session_id VARCHAR(32)` 外键、`user_text TEXT`、`status VARCHAR(16)` 和 UTC `created_at`；按 `session_id, created_at` 建索引。
+- `Trace` 继承 `CrudModel`，提供按会话编号过滤并按创建时间升序排列的查询。
+- Trace 创建和会话更新时间、首轮标题变更在同一事务中提交。新 Trace 初始为 `running`。若会话标题仍是「新会话」，首条用户输入的前 16 个字作为标题，超长追加「…」；已有人工标题保持不变。
+- `ChatReplyService` 协调会话归属校验、Trace 创建、标题和时间更新及流状态。SSE 正常结束后状态为 `complete`；流发生错误或客户端取消后状态为 `failed`。回复正文仍只在当前 SSE 中传输，本步骤不存助手正文。
+- `GET /chat-sessions/{id}/traces` 只返回当前用户会话的 Trace，按创建时间升序。会话不存在或不属于当前用户时返回 404「会话不存在」。
+- `POST /chat-sessions/{id}/replies` 在验证会话归属和非空 `text` 后创建 Trace 并返回 SSE。空白 `text` 返回 400「不能为空」。未登录返回 401；会话不存在或越权返回 404。事件保持 `chunk`（仅有 `text`）、`done`（`{}`）和 `error`（`detail`）；旧 `POST /replies` 删除。
+- 前端 SSE 请求必须带当前会话编号。重新打开会话时读取 Trace，按顺序恢复用户输入和 `running`、`complete`、`failed` 状态；助手消息正文的持久化留到第 4 步。
 
 ## 行为说明
 

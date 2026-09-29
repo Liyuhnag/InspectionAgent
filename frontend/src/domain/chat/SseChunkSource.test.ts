@@ -47,7 +47,7 @@ describe('SseChunkSource', () => {
     saveToken('tok-reply')
     vi.mocked(fetch).mockResolvedValue(new Response(streamFrom(sseBody()), { status: 200 }))
     const source = new SseChunkSource()
-    const session = new ChatSession(source, () => new SequenceId().next())
+    const session = new ChatSession(source, () => new SequenceId().next(), 'session-test')
 
     expect(session.send('阀门')).toBe(true)
     await vi.waitFor(() => {
@@ -55,7 +55,7 @@ describe('SseChunkSource', () => {
     })
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]
-    expect(String(url)).toContain('/replies')
+    expect(String(url)).toContain('/chat-sessions/session-test/replies')
     expect(init?.method).toBe('POST')
     expect(new Headers(init?.headers).get('satoken')).toBe('tok-reply')
     expect(JSON.parse(String(init?.body))).toEqual({ text: '阀门' })
@@ -69,7 +69,7 @@ describe('SseChunkSource', () => {
     vi.mocked(fetch).mockResolvedValue(new Response(streamFrom(partial), { status: 200 }))
     const source = new SseChunkSource()
     const ids = new SequenceId()
-    const session = new ChatSession(source, () => ids.next())
+    const session = new ChatSession(source, () => ids.next(), 'session-test')
 
     session.send('失败')
     await vi.waitFor(() => {
@@ -88,7 +88,7 @@ describe('SseChunkSource', () => {
       return new Promise(() => undefined)
     })
     const source = new SseChunkSource()
-    const session = new ChatSession(source, () => new SequenceId().next())
+    const session = new ChatSession(source, () => new SequenceId().next(), 'session-test')
 
     session.send('中断')
     await vi.waitFor(() => {

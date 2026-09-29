@@ -12,6 +12,7 @@ export class LocalTimedChunkSource implements TextChunkSource {
 
   /** 按间隔把回复交给调用方。 */
   start(
+    _sessionId: string,
     input: string,
     onChunk: (chunk: string) => void,
     onDone: () => void,

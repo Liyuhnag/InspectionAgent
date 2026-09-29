@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, saveToken } from './session'
-import { createChatSession, getChatSession, listChatSessions, renameChatSession } from './chatSessions'
+import {
+  createChatSession,
+  getChatSession,
+  listChatSessionTraces,
+  listChatSessions,
+  openChatSessionReply,
+  renameChatSession,
+} from './chatSessions'
 
 describe('聊天会话 API', () => {
   const fetchMock = vi.fn<typeof fetch>()
@@ -62,6 +69,33 @@ describe('聊天会话 API', () => {
     expect(options?.method).toBe('PATCH')
     expect(options?.body).toBe(JSON.stringify({ title: '巡检记录' }))
     expect(new Headers(options?.headers).get('satoken')).toBe('session-token')
+  })
+
+  it('按会话读取 Trace 历史', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ traces: [] }), { status: 200 }))
+
+    await expect(listChatSessionTraces('session-1')).resolves.toEqual({ traces: [] })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/chat-sessions/session-1/traces',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it('将回复流绑定到会话编号并传递中断信号', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('stream', { status: 200 }))
+    const controller = new AbortController()
+
+    await openChatSessionReply('session-2', '巡检', controller.signal)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/chat-sessions/session-2/replies',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ text: '巡检' }),
+        signal: controller.signal,
+      }),
+    )
   })
 
   it('把后端错误转换为 ApiError', async () => {

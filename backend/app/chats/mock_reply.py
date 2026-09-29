@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """模拟回复。变化点是以后换成模型输出，切段长度保持不变。"""
 
-import json
-from collections.abc import Iterator
-
 CHUNK_SIZE = 4
 
 
@@ -51,11 +48,3 @@ def mock_reply(text: str) -> str:
 def iter_chunks(reply: str, size: int = CHUNK_SIZE) -> list[str]:
     """按固定长度切开回复。最后一段可以更短。"""
     return [reply[index:index + size] for index in range(0, len(reply), size)]
-
-
-def sse_reply(text: str) -> Iterator[str]:
-    """把模拟回复写成 chunk 事件，并以 done 结束。"""
-    for chunk in iter_chunks(mock_reply(text)):
-        payload = json.dumps({"text": chunk}, ensure_ascii=False)
-        yield f"event: chunk\ndata: {payload}\n\n"
-    yield "event: done\ndata: {}\n\n"

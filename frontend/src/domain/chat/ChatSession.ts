@@ -1,4 +1,4 @@
-import type { ChatMessage, MessagePart, TextChunkSource } from './types'
+import type { ChatMessage, MessagePart, PersistedTrace, TextChunkSource } from './types'
 
 /** 优先使用输入组件的文本，组件模型为空时用编辑区里的文字。 */
 export function preferDraft(modelText: string, domText: string): string {
@@ -33,9 +33,13 @@ export class ChatSession {
 
   private streamingId: string | null = null
 
+  private streamingUserId: string | null = null
+
+  /** 创建会话消息状态并绑定服务端会话编号。 */
   constructor(
     private readonly source: TextChunkSource,
     private readonly nextId: () => string,
+    private readonly sessionId = '',
   ) {}
 
   /** 是否正在等待当前助手回复写完。 */
@@ -49,12 +53,14 @@ export class ChatSession {
     if (!text || this.streamingId !== null) {
       return false
     }
-    this.messages.push({
+    const userMessage: ChatMessage = {
       id: this.nextId(),
       role: 'user',
       status: 'complete',
       parts: [{ type: 'text', text }],
-    })
+      traceStatus: 'running',
+    }
+    this.messages.push(userMessage)
     const assistantId = this.nextId()
     this.messages.push({
       id: assistantId,
@@ -63,13 +69,29 @@ export class ChatSession {
       parts: [{ type: 'text', text: '' }],
     })
     this.streamingId = assistantId
+    this.streamingUserId = userMessage.id
     this.source.start(
+      this.sessionId,
       text,
       (chunk) => this.appendChunk(assistantId, chunk),
       () => this.finish(assistantId),
       () => this.fail(assistantId),
     )
     return true
+  }
+
+  /** 用持久化 Trace 恢复会话中的用户输入和运行状态。 */
+  restoreTraces(traces: readonly PersistedTrace[]): void {
+    this.messages.splice(0)
+    for (const trace of traces) {
+      this.messages.push({
+        id: this.nextId(),
+        role: 'user',
+        status: 'complete',
+        traceStatus: trace.status,
+        parts: [{ type: 'text', text: trace.user_text }],
+      })
+    }
   }
 
   /** 中断尚未完成的回复，并保留已经输出的文字。 */
@@ -98,8 +120,10 @@ export class ChatSession {
       return
     }
     message.status = 'complete'
+    this._setTraceStatus('complete')
     if (this.streamingId === id) {
       this.streamingId = null
+      this.streamingUserId = null
     }
   }
 
@@ -110,8 +134,10 @@ export class ChatSession {
       return
     }
     message.status = 'error'
+    this._setTraceStatus('failed')
     if (this.streamingId === id) {
       this.streamingId = null
+      this.streamingUserId = null
       this.source.stop()
     }
   }
@@ -119,5 +145,13 @@ export class ChatSession {
   /** 找到仍由本次发送创建的助手消息。 */
   private findAssistant(id: string): ChatMessage | undefined {
     return this.messages.find((message) => message.id === id && message.role === 'assistant')
+  }
+
+  /** 设置当前用户消息对应 Trace 的运行结果。 */
+  private _setTraceStatus(status: 'complete' | 'failed'): void {
+    const userMessage = this.messages.find((message) => message.id === this.streamingUserId)
+    if (userMessage) {
+      userMessage.traceStatus = status
+    }
   }
 }

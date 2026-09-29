@@ -4,6 +4,7 @@
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
 
 from app.config.settings import AppSettings
 from app.config.settings import ConfigError
@@ -23,7 +24,12 @@ def open_test_database() -> tuple[MysqlSettings, Engine]:
             connection.execute(text("SELECT 1"))
     except ConfigError:
         pytest.skip("测试环境配置不完整")
-    except Exception:
-        # 测试库连不上时跳过，不把环境问题当成用例失败。
-        pytest.skip("测试库不可用")
+    except DBAPIError as error:
+        # 只报告驱动类型和错误码，不输出配置值或连接串。
+        original = error.orig
+        code = original.args[0] if original.args and isinstance(original.args[0], int) else "unknown"
+        pytest.skip(f"测试库连接失败：{type(original).__name__}，驱动错误码 {code}")
+    except Exception as error:
+        # 配置解析或探测异常只报告类型，避免测试输出敏感配置。
+        pytest.skip(f"测试库探测失败：{type(error).__name__}")
     return settings, engine

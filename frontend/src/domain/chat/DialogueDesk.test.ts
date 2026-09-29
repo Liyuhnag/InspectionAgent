@@ -44,6 +44,23 @@ describe('DialogueDesk', () => {
     expect(desk.active.title).toBe('检查北门阀门')
   })
 
+  it('从服务端加载会话并以服务端编号新建会话', () => {
+    const desk = new DialogueDesk(new ManualSource(), () => 'unused', false)
+
+    expect(desk.dialogues).toHaveLength(0)
+    desk.load([
+      { id: 'server-1', title: '第一条' },
+      { id: 'server-2', title: '第二条' },
+    ])
+    expect(desk.dialogues.map((item) => item.id)).toEqual(['server-1', 'server-2'])
+    expect(desk.activeId).toBe('server-1')
+    expect(desk.active.title).toBe('第一条')
+
+    const created = desk.add('server-3', '新会话')
+    expect(desk.activeId).toBe('server-3')
+    expect(created.id).toBe('server-3')
+  })
+
   it('切换会话时中断正在输出的回复', () => {
     const source = new ManualSource()
     const ids = new SequenceId()

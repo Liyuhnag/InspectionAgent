@@ -319,3 +319,6 @@ docs/
 
 `backend/config/dev.yaml` 同时包含 `mysql`、`jwt` 和 `redis`。同一台 MySQL、同一台 Redis 都用 `database` 做开发库，用 `test_database` 做测试库。Redis 密码可以为空。仓库只提交 `dev.yaml.example`，值为空。本机文件含密码或密钥，不提交。开发和测试都读这一份文件。
 
+## 9. 数据库初始化脚本
+
+新增数据库表时，必须同步维护可重复运行的初始化脚本，不能只依赖应用启动时自动建表。统一使用 `backend/scripts/create_database.py`，并显式指定 `--target development` 或 `--target test`。脚本从本机 `backend/config/dev.yaml` 读取连接信息，先幂等创建目标数据库，再初始化该数据库所需的表。新增或修改模型表时，同步更新脚本中的初始化模型列表。脚本不得输出密码、密钥或连接串；运行开发库脚本前确认目标为 `development`。

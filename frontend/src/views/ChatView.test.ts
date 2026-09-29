@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('vue-element-plus-x', () => ({
   BubbleList: {
@@ -10,7 +10,8 @@ vi.mock('vue-element-plus-x', () => ({
   Conversations: {
     name: 'Conversations',
     props: ['items'],
-    template: '<ul><li v-for="item in items" :key="item.id">{{ item.label }}</li></ul>',
+    emits: ['change'],
+    template: '<ul><li v-for="item in items" :key="item.id" @click="$emit(\'change\', { id: item.id })">{{ item.label }}</li></ul>',
   },
   Prompts: {
     name: 'Prompts',
@@ -29,9 +30,31 @@ vi.mock('vue-element-plus-x', () => ({
   },
 }))
 
+vi.mock('@/api/chatSessions', () => ({
+  createChatSession: vi.fn(),
+  getChatSession: vi.fn(),
+  listChatSessions: vi.fn(),
+}))
+
 import { SequenceId } from '@/domain/chat/SequenceId'
 import type { TextChunkSource } from '@/domain/chat/types'
+import { createChatSession, getChatSession, listChatSessions } from '@/api/chatSessions'
 import ChatView from '@/views/ChatView.vue'
+
+const firstSession = { id: 'session-1', title: '新会话', updated_at: '2026-01-01T00:00:00Z' }
+
+async function mountChat(props: Record<string, unknown> = {}) {
+  const wrapper = mount(ChatView, {
+    props,
+    global: {
+      stubs: {
+        ElButton: { template: '<button><slot /></button>' },
+      },
+    },
+  })
+  await flushPromises()
+  return wrapper
+}
 
 class ManualSource implements TextChunkSource {
   onChunk: ((chunk: string) => void) | null = null
@@ -54,16 +77,19 @@ class ManualSource implements TextChunkSource {
 }
 
 describe('ChatView', () => {
+  beforeEach(() => {
+    vi.mocked(listChatSessions).mockReset().mockResolvedValue({ sessions: [firstSession] })
+    vi.mocked(createChatSession).mockReset().mockResolvedValue({
+      id: 'session-2',
+      title: '新会话',
+      updated_at: '2026-01-02T00:00:00Z',
+    })
+    vi.mocked(getChatSession).mockReset().mockResolvedValue(firstSession)
+  })
+
   it('发送后在页面上显示逐段增长的回复', async () => {
     const source = new ManualSource()
-    const wrapper = mount(ChatView, {
-      props: { streamSource: source },
-      global: {
-        stubs: {
-          ElButton: { template: '<button><slot /></button>' },
-        },
-      },
-    })
+    const wrapper = await mountChat({ streamSource: source })
 
     const exposed = wrapper.vm as unknown as {
       submitText: (text: string) => boolean
@@ -87,14 +113,7 @@ describe('ChatView', () => {
 
   it('点击首页推荐任务会直接发送', async () => {
     const source = new ManualSource()
-    const wrapper = mount(ChatView, {
-      props: { streamSource: source },
-      global: {
-        stubs: {
-          ElButton: { template: '<button><slot /></button>' },
-        },
-      },
-    })
+    const wrapper = await mountChat({ streamSource: source })
 
     await wrapper.find('.starter').trigger('click')
     expect(wrapper.text()).toContain('检查设备运行状态')
@@ -103,13 +122,7 @@ describe('ChatView', () => {
   })
 
   it('会话栏可以收起再展开', async () => {
-    const wrapper = mount(ChatView, {
-      global: {
-        stubs: {
-          ElButton: { template: '<button><slot /></button>' },
-        },
-      },
-    })
+    const wrapper = await mountChat()
 
     expect(wrapper.text()).toContain('新建会话')
     await wrapper.get('[aria-label="收起会话栏"]').trigger('click')
@@ -117,6 +130,51 @@ describe('ChatView', () => {
     expect(wrapper.find('[aria-label="展开会话栏"]').exists()).toBe(true)
     await wrapper.get('[aria-label="展开会话栏"]').trigger('click')
     expect(wrapper.find('.session-pane').classes()).not.toContain('session-pane--collapsed')
+  })
+
+  it('服务端没有会话时自动创建默认会话', async () => {
+    vi.mocked(listChatSessions).mockResolvedValue({ sessions: [] })
+    const wrapper = await mountChat()
+
+    expect(createChatSession).toHaveBeenCalledOnce()
+    expect((wrapper.vm as unknown as { desk: { active: { id: string } } }).desk.active.id).toBe('session-2')
+  })
+
+  it('新建会话后选中服务端返回的编号', async () => {
+    const wrapper = await mountChat()
+
+    await wrapper.get('.session-create').trigger('click')
+    await flushPromises()
+
+    expect(createChatSession).toHaveBeenCalledOnce()
+    expect((wrapper.vm as unknown as { desk: { active: { id: string } } }).desk.active.id).toBe('session-2')
+  })
+
+  it('切换会话前从服务端读取并校验编号', async () => {
+    const secondSession = { id: 'session-2', title: '巡检记录', updated_at: '2026-01-02T00:00:00Z' }
+    vi.mocked(listChatSessions).mockResolvedValue({ sessions: [firstSession, secondSession] })
+    vi.mocked(getChatSession).mockResolvedValue(secondSession)
+    const wrapper = await mountChat()
+
+    await wrapper.findAll('.session-list li')[1].trigger('click')
+    await flushPromises()
+
+    expect(getChatSession).toHaveBeenCalledWith('session-2')
+    expect((wrapper.vm as unknown as { desk: { active: { id: string; title: string } } }).desk.active)
+      .toMatchObject({ id: 'session-2', title: '巡检记录' })
+  })
+
+  it('加载会话失败时显示错误并允许重试', async () => {
+    vi.mocked(listChatSessions).mockRejectedValueOnce(new Error('服务不可用'))
+    const wrapper = await mountChat()
+    const exposed = wrapper.vm as unknown as { submitText: (text: string) => boolean }
+
+    expect(wrapper.text()).toContain('服务不可用')
+    expect(exposed.submitText('检查阀门')).toBe(false)
+    await wrapper.get('.chat-stage button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('正在加载会话')
+    expect(wrapper.text()).toContain('新会话')
   })
 })
 

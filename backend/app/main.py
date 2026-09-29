@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""应用入口。启动时建用户表，并挂上注册、登录和模拟回复接口。"""
+"""应用入口。启动时创建用户和聊天会话表，并挂上业务接口。"""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,9 +7,11 @@ from redis import Redis
 from sqlalchemy.engine import Engine
 
 from app.api.auth import AuthMiddleware
+from app.api.routes.chat_sessions import chat_sessions_router
 from app.api.routes.register import register_router
 from app.api.routes.replies import replies_router
 from app.api.routes.session import session_router
+from app.chats.chat_session import ChatSession
 from app.config.settings import DEV_CONFIG
 from app.config.settings import AppSettings
 from app.db.mysql import mysql_engine
@@ -37,6 +39,7 @@ def create_app(
     if session_ttl_seconds is None:
         session_ttl_seconds = settings.jwt.expires_minutes * 60
     User.create_table(engine)
+    ChatSession.create_table(engine)
     login = Login(engine, codes, session_ttl_seconds)
     app = FastAPI()
     app.add_middleware(AuthMiddleware, login=login)
@@ -49,5 +52,6 @@ def create_app(
     )
     app.include_router(register_router(Registration(engine, codes)))
     app.include_router(session_router(login))
+    app.include_router(chat_sessions_router(engine))
     app.include_router(replies_router())
     return app

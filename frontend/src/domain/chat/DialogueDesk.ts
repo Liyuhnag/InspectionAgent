@@ -5,10 +5,14 @@ import type { TextChunkSource } from './types'
 export class Dialogue {
   title = '新会话'
 
+  /** 创建本地对话状态并绑定消息来源。 */
   constructor(
     readonly id: string,
     readonly chat: ChatSession,
-  ) {}
+    title = '新会话',
+  ) {
+    this.title = title
+  }
 
   /** 还没有消息时，右侧显示 AI 形象而不是对话。 */
   get empty(): boolean {
@@ -34,8 +38,11 @@ export class DialogueDesk {
   constructor(
     private readonly source: TextChunkSource,
     private readonly nextId: () => string,
+    createInitial = true,
   ) {
-    this.create()
+    if (createInitial) {
+      this.create()
+    }
   }
 
   /** 当前正在查看的会话。 */
@@ -54,6 +61,26 @@ export class DialogueDesk {
       this.nextId(),
       new ChatSession(this.source, this.nextId),
     )
+    this.dialogues.unshift(dialogue)
+    this.activeId = dialogue.id
+    return dialogue
+  }
+
+  /** 用服务端读取的会话替换当前列表。 */
+  load(sessions: readonly { id: string; title: string }[]): void {
+    this.abortActive()
+    this.dialogues.splice(0)
+    for (const item of sessions) {
+      const dialogue = new Dialogue(item.id, new ChatSession(this.source, this.nextId), item.title)
+      this.dialogues.push(dialogue)
+    }
+    this.activeId = sessions[0]?.id ?? ''
+  }
+
+  /** 将新建的服务端会话加入列表并选中。 */
+  add(id: string, title: string): Dialogue {
+    this.abortActive()
+    const dialogue = new Dialogue(id, new ChatSession(this.source, this.nextId), title)
     this.dialogues.unshift(dialogue)
     this.activeId = dialogue.id
     return dialogue

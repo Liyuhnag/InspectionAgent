@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { BubbleList, Conversations, Prompts, Welcome, XSender } from 'vue-element-plus-x'
 import type { BubbleListItemProps } from 'vue-element-plus-x/types/BubbleList'
 import type { PromptsItemsProps } from 'vue-element-plus-x/types/Prompts'
@@ -7,6 +7,7 @@ import type { PromptsItemsProps } from 'vue-element-plus-x/types/Prompts'
 import portrait from '@/assets/ai-assistant.png'
 import assistantAvatar from '@/assets/avatar-ai.svg'
 import userAvatar from '@/assets/avatar-user.svg'
+import { createChatSession, getChatSession, listChatSessions } from '@/api/chatSessions'
 import { preferDraft, senderText, visibleText } from '@/domain/chat/ChatSession'
 import { DialogueDesk } from '@/domain/chat/DialogueDesk'
 import { renderMarkdown } from '@/domain/chat/renderMarkdown'
@@ -28,7 +29,11 @@ const props = withDefaults(
 const collapsed = ref(false)
 const ids = new SequenceId()
 const source = props.streamSource ?? new SseChunkSource()
-const desk = reactive(new DialogueDesk(source, () => ids.next()))
+const desk = reactive(new DialogueDesk(source, () => ids.next(), false))
+const sessionLoading = ref(true)
+const sessionBusy = ref(false)
+const sessionError = ref('')
+let selectionRequest = 0
 const senderRef = ref<{
   getModelValue: () => { text?: string }
   clear: () => void
@@ -69,17 +74,42 @@ function toBubble(
   }
 }
 
+const activeDialogue = computed(() => desk.dialogues.find((item) => item.id === desk.activeId))
+
 const dialogueItems = computed(() => desk.dialogues.map((item) => ({
   id: item.id,
   label: item.title,
 })))
 
-const bubbles = computed(() => desk.active.chat.messages.map((message) => toBubble(message)))
+const bubbles = computed(() => activeDialogue.value?.chat.messages.map((message) => toBubble(message)) ?? [])
 
 const failed = computed(() => {
-  const last = desk.active.chat.messages[desk.active.chat.messages.length - 1]
+  const messages = activeDialogue.value?.chat.messages ?? []
+  const last = messages[messages.length - 1]
   return last?.status === 'error'
 })
+
+/** 从后端加载会话；空列表时创建一条默认会话。 */
+async function loadSessions(): Promise<void> {
+  const requestId = ++selectionRequest
+  sessionLoading.value = true
+  sessionError.value = ''
+  try {
+    const response = await listChatSessions()
+    const sessions = response.sessions.length ? response.sessions : [await createChatSession()]
+    if (requestId === selectionRequest) {
+      desk.load(sessions)
+    }
+  } catch (error) {
+    if (requestId === selectionRequest) {
+      sessionError.value = _errorMessage(error, '会话加载失败，请重试')
+    }
+  } finally {
+    if (requestId === selectionRequest) {
+      sessionLoading.value = false
+    }
+  }
+}
 
 /** 按 Enter 发送。Shift+Enter 留给输入框换行。 */
 function onEnter(event: KeyboardEvent): void {
@@ -104,29 +134,61 @@ function draftText(): string {
 
 /** 提交输入。流式期间和空白内容都不会发送。 */
 function submitDraft(): void {
+  if (!activeDialogue.value || sessionLoading.value || sessionBusy.value) {
+    return
+  }
   const text = draftText()
-  const dialogue = desk.active
+  const dialogue = activeDialogue.value
   const accepted = dialogue.chat.send(text)
   if (!accepted) {
     return
   }
-  dialogue.nameFrom(text)
+  sessionError.value = ''
   senderRef.value?.clear()
 }
 
 /** 新建一个空会话，并回到 AI 形象页。 */
-function createDialogue(): void {
-  desk.create()
-  senderRef.value?.clear()
+async function createDialogue(): Promise<void> {
+  if (sessionLoading.value || sessionBusy.value) {
+    return
+  }
+  sessionError.value = ''
+  sessionBusy.value = true
+  try {
+    const created = await createChatSession()
+    desk.add(created.id, created.title)
+    senderRef.value?.clear()
+  } catch (error) {
+    sessionError.value = _errorMessage(error, '新建会话失败，请重试')
+  } finally {
+    sessionBusy.value = false
+  }
 }
 
 /** 切换左侧会话。 */
-function selectDialogue(item: { id?: string }): void {
-  if (!item.id) {
+async function selectDialogue(item: { id?: string }): Promise<void> {
+  if (!item.id || item.id === desk.activeId || sessionLoading.value || sessionBusy.value) {
     return
   }
-  desk.select(item.id)
-  senderRef.value?.clear()
+  const requestId = ++selectionRequest
+  sessionError.value = ''
+  sessionBusy.value = true
+  try {
+    const selected = await getChatSession(item.id)
+    if (requestId === selectionRequest) {
+      desk.select(selected.id)
+      desk.active.title = selected.title
+      senderRef.value?.clear()
+    }
+  } catch (error) {
+    if (requestId === selectionRequest) {
+      sessionError.value = _errorMessage(error, '切换会话失败，请重试')
+    }
+  } finally {
+    if (requestId === selectionRequest) {
+      sessionBusy.value = false
+    }
+  }
 }
 
 /** 点击首页的推荐任务，直接作为第一条消息发送。 */
@@ -138,13 +200,25 @@ function sendStarter(item: PromptsItemsProps): void {
 
 /** 供测试直接提交一段文字。 */
 function submitText(text: string): boolean {
-  const dialogue = desk.active
+  const dialogue = activeDialogue.value
+  if (!dialogue || sessionLoading.value || sessionBusy.value) {
+    return false
+  }
   const accepted = dialogue.chat.send(text)
   if (accepted) {
-    dialogue.nameFrom(text)
+    sessionError.value = ''
   }
   return accepted
 }
+
+/** 把异常整理为会话操作的提示文字。 */
+function _errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+onMounted(() => {
+  void loadSessions()
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEnter, true)
@@ -157,17 +231,21 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-defineExpose({ submitText, createDialogue, desk })
+defineExpose({ submitText, createDialogue, loadSessions, desk })
 </script>
 
 <template>
   <main class="chat-shell">
     <aside class="session-pane" :class="{ 'session-pane--collapsed': collapsed }">
       <div class="session-clip">
-        <div class="session-body" :inert="collapsed">
+        <div class="session-body" :inert="collapsed || sessionLoading || sessionBusy">
           <div class="session-toolbar">
             <h1>会话</h1>
-            <el-button class="session-create" @click="createDialogue">新建会话</el-button>
+            <el-button
+              class="session-create"
+              :disabled="sessionLoading || sessionBusy"
+              @click="createDialogue"
+            >新建会话</el-button>
           </div>
           <Conversations
             class="session-list"
@@ -197,16 +275,21 @@ defineExpose({ submitText, createDialogue, desk })
       </button>
     </aside>
 
-    <section class="chat-pane" :class="{ 'chat-pane--empty': desk.active.empty }">
+    <section class="chat-pane" :class="{ 'chat-pane--empty': !activeDialogue || activeDialogue.empty }">
+      <p v-if="sessionError" class="chat-status" role="alert">{{ sessionError }}</p>
       <img
-        v-if="desk.active.empty"
+        v-if="activeDialogue?.empty"
         class="chat-backdrop"
         :src="portrait"
         alt=""
         aria-hidden="true"
       />
-      <div class="chat-stage" :class="{ 'chat-stage--empty': desk.active.empty }">
-        <div v-if="desk.active.empty" class="chat-empty">
+      <div class="chat-stage" :class="{ 'chat-stage--empty': !activeDialogue || activeDialogue.empty }">
+        <div v-if="sessionLoading" class="chat-empty" role="status">正在加载会话</div>
+        <div v-else-if="!activeDialogue" class="chat-empty">
+          <el-button v-if="sessionError" @click="loadSessions">重试</el-button>
+        </div>
+        <div v-else-if="activeDialogue.empty" class="chat-empty">
           <Welcome
             class="chat-welcome"
             variant="borderless"
@@ -228,7 +311,7 @@ defineExpose({ submitText, createDialogue, desk })
             <div v-else class="bubble-md" v-html="renderMarkdown(item.content ?? '')" />
           </template>
         </BubbleList>
-        <p v-if="desk.active.chat.streaming" class="chat-status">正在回复</p>
+        <p v-if="activeDialogue?.chat.streaming" class="chat-status">正在回复</p>
         <p v-else-if="failed" class="chat-status">回复中断，可以再次发送</p>
       </div>
 
@@ -238,8 +321,8 @@ defineExpose({ submitText, createDialogue, desk })
           placeholder="输入消息"
           device="pc"
           submit-type="enter"
-          :loading="desk.active.chat.streaming"
-          :disabled="desk.active.chat.streaming"
+          :loading="activeDialogue?.chat.streaming ?? false"
+          :disabled="!activeDialogue || sessionLoading || sessionBusy || (activeDialogue?.chat.streaming ?? false)"
           :tip-config="false"
           @submit="submitDraft"
         />

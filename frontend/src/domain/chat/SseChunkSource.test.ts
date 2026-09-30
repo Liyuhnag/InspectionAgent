@@ -63,6 +63,21 @@ describe('SseChunkSource', () => {
     expect(visibleText(session.messages[1].parts)).toBe(reply)
   })
 
+  it('重新生成时把 siblingOf 作为 sibling_of 发给后端', async () => {
+    saveToken('tok-reply')
+    vi.mocked(fetch).mockResolvedValue(new Response(streamFrom(sseBody()), { status: 200 }))
+    const ids = new SequenceId()
+    const session = new ChatSession(new SseChunkSource(), () => ids.next(), 'session-test')
+
+    expect(session.send('阀门', 'trace-1')).toBe(true)
+    await vi.waitFor(() => {
+      expect(session.messages[1].status).toBe('complete')
+    })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toEqual({ text: '阀门', sibling_of: 'trace-1' })
+  })
+
   it('收到 error 后保留已输出文字并允许再次发送', async () => {
     saveToken('tok-reply')
     const partial = 'event: chunk\ndata: {"text":"部分"}\n\nevent: error\ndata: {"detail":"回复失败"}\n\n'

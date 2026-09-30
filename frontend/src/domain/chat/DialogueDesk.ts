@@ -1,5 +1,5 @@
 import { ChatSession } from './ChatSession'
-import type { PersistedTrace, TextChunkSource } from './types'
+import type { HistoryPage, TextChunkSource } from './types'
 
 /** 一次会话，包含标题和自己的消息。 */
 export class Dialogue {
@@ -37,6 +37,9 @@ export class DialogueDesk {
 
   activeId = ''
 
+  /** 某个会话的一轮回复正常结束或失败后调用，外层据此重新读取历史。 */
+  onSettled: ((id: string) => void) | null = null
+
   constructor(
     private readonly source: TextChunkSource,
     private readonly nextId: () => string,
@@ -59,11 +62,7 @@ export class DialogueDesk {
   /** 新建空会话并立刻选中。 */
   create(): Dialogue {
     this.abortActive()
-    const id = this.nextId()
-    const dialogue = new Dialogue(
-      id,
-      new ChatSession(this.source, this.nextId, id),
-    )
+    const dialogue = this.build(this.nextId(), '新会话')
     this.dialogues.unshift(dialogue)
     this.activeId = dialogue.id
     return dialogue
@@ -74,12 +73,7 @@ export class DialogueDesk {
     this.abortActive()
     this.dialogues.splice(0)
     for (const item of sessions) {
-      const dialogue = new Dialogue(
-        item.id,
-        new ChatSession(this.source, this.nextId, item.id),
-        item.title,
-      )
-      this.dialogues.push(dialogue)
+      this.dialogues.push(this.build(item.id, item.title))
     }
     this.activeId = sessions[0]?.id ?? ''
   }
@@ -87,20 +81,20 @@ export class DialogueDesk {
   /** 将新建的服务端会话加入列表并选中。 */
   add(id: string, title: string): Dialogue {
     this.abortActive()
-    const dialogue = new Dialogue(id, new ChatSession(this.source, this.nextId, id), title)
+    const dialogue = this.build(id, title)
     dialogue.tracesLoaded = true
     this.dialogues.unshift(dialogue)
     this.activeId = dialogue.id
     return dialogue
   }
 
-  /** 将服务端 Trace 恢复成会话里的用户输入和状态。 */
-  loadTraces(id: string, traces: readonly PersistedTrace[]): void {
+  /** 用历史接口的一页替换会话里的消息。 */
+  loadHistory(id: string, page: HistoryPage): void {
     const dialogue = this.dialogues.find((item) => item.id === id)
     if (!dialogue) {
       return
     }
-    dialogue.chat.restoreTraces(traces)
+    dialogue.chat.restoreHistory(page)
     dialogue.tracesLoaded = true
   }
 
@@ -111,6 +105,24 @@ export class DialogueDesk {
     }
     this.abortActive()
     this.activeId = id
+  }
+
+  /** 创建会话对象，并把回复结束事件转给外层。 */
+  private build(id: string, title: string): Dialogue {
+    const chat = new ChatSession(this.source, this.nextId, id, (aborted) => this.settled(id, aborted))
+    return new Dialogue(id, chat, title)
+  }
+
+  /** 本地中断的回复还没写完，下次打开时重新读取；其余情况交给外层刷新。 */
+  private settled(id: string, aborted: boolean): void {
+    if (aborted) {
+      const dialogue = this.dialogues.find((item) => item.id === id)
+      if (dialogue) {
+        dialogue.tracesLoaded = false
+      }
+      return
+    }
+    this.onSettled?.(id)
   }
 
   /** 中断当前会话里尚未完成的流式回复。 */

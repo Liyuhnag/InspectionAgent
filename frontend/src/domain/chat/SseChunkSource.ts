@@ -23,12 +23,13 @@ export class SseChunkSource implements TextChunkSource {
     onChunk: (chunk: string) => void,
     onDone: () => void,
     onError: (reason: Error) => void,
+    siblingOf?: string,
   ): void {
     this.stop()
     this.finished = false
     const controller = new AbortController()
     this.controller = controller
-    void this.read(sessionId, input, controller, onChunk, onDone, onError)
+    void this.read(sessionId, input, controller, onChunk, onDone, onError, siblingOf)
   }
 
   /** 取消尚未结束的请求。 */
@@ -45,9 +46,10 @@ export class SseChunkSource implements TextChunkSource {
     onChunk: (chunk: string) => void,
     onDone: () => void,
     onError: (reason: Error) => void,
+    siblingOf?: string,
   ): Promise<void> {
     try {
-      const response = await openChatSessionReply(sessionId, input, controller.signal)
+      const response = await openChatSessionReply(sessionId, input, controller.signal, siblingOf)
       if (!response.ok || !response.body) {
         this.fail(onError, new Error('回复失败'))
         return

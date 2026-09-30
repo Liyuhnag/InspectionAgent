@@ -4,11 +4,13 @@ import { ApiError, saveToken } from './session'
 import {
   createChatSession,
   getChatSession,
+  getChatSessionHistory,
   listChatSessionSpans,
   listChatSessionTraces,
   listChatSessions,
   openChatSessionReply,
   renameChatSession,
+  switchChatSessionBranch,
 } from './chatSessions'
 
 describe('聊天会话 API', () => {
@@ -108,6 +110,41 @@ describe('聊天会话 API', () => {
         signal: controller.signal,
       }),
     )
+  })
+
+  it('编辑和重新生成时带上 sibling_of', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('stream', { status: 200 }))
+
+    await openChatSessionReply('session-2', '巡检', new AbortController().signal, 'trace-1')
+
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(JSON.stringify({ text: '巡检', sibling_of: 'trace-1' }))
+  })
+
+  it('读取历史时按需带上 limit 和 before', async () => {
+    const page = { turns: [], has_more: false }
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(page), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(page), { status: 200 }))
+
+    await expect(getChatSessionHistory('session-1')).resolves.toEqual(page)
+    await getChatSessionHistory('session-1', { limit: 40, before: 'trace-9' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:8000/chat-sessions/session-1/history')
+    expect(fetchMock.mock.calls[1][0])
+      .toBe('http://127.0.0.1:8000/chat-sessions/session-1/history?limit=40&before=trace-9')
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('satoken')).toBe('session-token')
+  })
+
+  it('用 PUT 切换版本并返回新分支的历史', async () => {
+    const page = { turns: [], has_more: false }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(page), { status: 200 }))
+
+    await expect(switchChatSessionBranch('session-1', 'trace-2')).resolves.toEqual(page)
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8000/chat-sessions/session-1/active-trace')
+    expect(options?.method).toBe('PUT')
+    expect(options?.body).toBe(JSON.stringify({ trace_id: 'trace-2' }))
   })
 
   it('把后端错误转换为 ApiError', async () => {

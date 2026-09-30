@@ -9,15 +9,18 @@ class ManualSource implements TextChunkSource {
 
   onChunk: ((chunk: string) => void) | null = null
 
+  onDone: (() => void) | null = null
+
   /** 保存回调。 */
   start(
     _sessionId: string,
     _input: string,
     onChunk: (chunk: string) => void,
-    _onDone: () => void,
+    onDone: () => void,
     _onError: (reason: Error) => void,
   ): void {
     this.onChunk = onChunk
+    this.onDone = onDone
   }
 
   /** 记录停止次数。 */
@@ -56,15 +59,19 @@ describe('DialogueDesk', () => {
     expect(desk.dialogues.map((item) => item.id)).toEqual(['server-1', 'server-2'])
     expect(desk.activeId).toBe('server-1')
     expect(desk.active.title).toBe('第一条')
-    desk.loadTraces('server-1', [
-      {
-        id: 'trace-1',
+    desk.loadHistory('server-1', {
+      turns: [{
+        trace_id: 'trace-1',
         user_text: '恢复的请求',
         status: 'complete',
         created_at: '2026-01-01T00:00:00Z',
-      },
-    ])
+        reply: '恢复的回答',
+        versions: { index: 1, total: 1, trace_ids: ['trace-1'] },
+      }],
+      has_more: false,
+    })
     expect(desk.active.chat.messages[0].parts[0].text).toBe('恢复的请求')
+    expect(desk.active.chat.messages[1].parts[0].text).toBe('恢复的回答')
     expect(desk.active.tracesLoaded).toBe(true)
 
     const created = desk.add('server-3', '新会话')
@@ -85,5 +92,21 @@ describe('DialogueDesk', () => {
     expect(first.chat.messages[1].status).toBe('error')
     expect(source.stopped).toBe(1)
     expect(desk.active.empty).toBe(true)
+    expect(first.tracesLoaded).toBe(false)
+  })
+
+  it('回复正常结束后通知外层刷新，本地中断时不通知', () => {
+    const source = new ManualSource()
+    const desk = new DialogueDesk(source, () => 'unused', false)
+    const settled: string[] = []
+    desk.onSettled = (id) => settled.push(id)
+    desk.load([{ id: 'server-1', title: '第一条' }, { id: 'server-2', title: '第二条' }])
+
+    desk.active.chat.send('完成')
+    source.onDone?.()
+    desk.active.chat.send('被中断')
+    desk.select('server-2')
+
+    expect(settled).toEqual(['server-1'])
   })
 })

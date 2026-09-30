@@ -10,16 +10,28 @@ import userAvatar from '@/assets/avatar-user.svg'
 import {
   createChatSession,
   getChatSession,
-  listChatSessionSpans,
-  listChatSessionTraces,
+  getChatSessionHistory,
   listChatSessions,
+  switchChatSessionBranch,
 } from '@/api/chatSessions'
 import { preferDraft, senderText, visibleText } from '@/domain/chat/ChatSession'
 import { DialogueDesk } from '@/domain/chat/DialogueDesk'
 import { renderMarkdown } from '@/domain/chat/renderMarkdown'
 import { SequenceId } from '@/domain/chat/SequenceId'
 import { SseChunkSource } from '@/domain/chat/SseChunkSource'
-import type { PersistedTrace, TextChunkSource, TraceStatus } from '@/domain/chat/types'
+import type { ChatMessage, TextChunkSource, TraceStatus, TurnVersions } from '@/domain/chat/types'
+
+type Bubble = BubbleListItemProps & {
+  key: string
+  plain: boolean
+  traceStatus?: TraceStatus
+  traceId?: string
+  versions?: TurnVersions
+  settled: boolean
+}
+
+const HISTORY_PAGE = 20
+const HISTORY_MAX = 100
 
 const props = withDefaults(
   defineProps<{
@@ -39,6 +51,9 @@ const desk = reactive(new DialogueDesk(source, () => ids.next(), false))
 const sessionLoading = ref(true)
 const sessionBusy = ref(false)
 const sessionError = ref('')
+const historyBusy = ref(false)
+const editingId = ref('')
+const editDraft = ref('')
 let selectionRequest = 0
 const senderRef = ref<{
   getModelValue: () => { text?: string }
@@ -56,9 +71,7 @@ const starters: PromptsItemsProps[] = [
 ].map((item) => ({ ...item, itemHoverStyle: starterHoverStyle }))
 
 /** 把消息转成气泡列表需要的展示数据。 */
-function toBubble(
-  message: (typeof desk.active.chat.messages)[number],
-): BubbleListItemProps & { key: string; plain: boolean; traceStatus?: TraceStatus } {
+function toBubble(message: ChatMessage): Bubble {
   const content = visibleText(message.parts)
   const fromUser = message.role === 'user'
   return {
@@ -78,6 +91,9 @@ function toBubble(
     avatarFit: 'cover',
     plain: fromUser,
     traceStatus: message.traceStatus,
+    traceId: message.traceId,
+    versions: message.versions,
+    settled: message.status !== 'streaming',
   }
 }
 
@@ -96,14 +112,11 @@ const failed = computed(() => {
   return last?.status === 'error'
 })
 
-/** 读取一组 Trace 和各自的 Span，用于恢复已持久化的对话。 */
-async function loadTraceHistory(sessionId: string): Promise<PersistedTrace[]> {
-  const response = await listChatSessionTraces(sessionId)
-  return Promise.all(response.traces.map(async (trace) => {
-    const spans = await listChatSessionSpans(sessionId, trace.id)
-    return { ...trace, spans: spans.spans }
-  }))
-}
+/** 流式回复、加载或切换期间，编辑、重新生成、切换版本和加载更早都不可用。 */
+const locked = computed(() => sessionLoading.value
+  || sessionBusy.value
+  || historyBusy.value
+  || (activeDialogue.value?.chat.streaming ?? false))
 
 /** 从后端加载会话；空列表时创建一条默认会话。 */
 async function loadSessions(): Promise<void> {
@@ -113,10 +126,10 @@ async function loadSessions(): Promise<void> {
   try {
     const response = await listChatSessions()
     const sessions = response.sessions.length ? response.sessions : [await createChatSession()]
-    const traces = await loadTraceHistory(sessions[0].id)
+    const page = await getChatSessionHistory(sessions[0].id)
     if (requestId === selectionRequest) {
       desk.load(sessions)
-      desk.loadTraces(sessions[0].id, traces)
+      desk.loadHistory(sessions[0].id, page)
     }
   } catch (error) {
     if (requestId === selectionRequest) {
@@ -152,23 +165,14 @@ function draftText(): string {
 
 /** 提交输入。流式期间和空白内容都不会发送。 */
 function submitDraft(): void {
-  if (!activeDialogue.value || sessionLoading.value || sessionBusy.value) {
-    return
+  if (submitText(draftText())) {
+    senderRef.value?.clear()
   }
-  const text = draftText()
-  const dialogue = activeDialogue.value
-  const accepted = dialogue.chat.send(text)
-  if (!accepted) {
-    return
-  }
-  dialogue.nameFrom(text)
-  sessionError.value = ''
-  senderRef.value?.clear()
 }
 
 /** 新建一个空会话，并回到 AI 形象页。 */
 async function createDialogue(): Promise<void> {
-  if (sessionLoading.value || sessionBusy.value) {
+  if (sessionLoading.value || sessionBusy.value || historyBusy.value) {
     return
   }
   sessionError.value = ''
@@ -176,6 +180,7 @@ async function createDialogue(): Promise<void> {
   try {
     const created = await createChatSession()
     desk.add(created.id, created.title)
+    cancelEdit()
     senderRef.value?.clear()
   } catch (error) {
     sessionError.value = _errorMessage(error, '新建会话失败，请重试')
@@ -186,7 +191,7 @@ async function createDialogue(): Promise<void> {
 
 /** 切换左侧会话。 */
 async function selectDialogue(item: { id?: string }): Promise<void> {
-  if (!item.id || item.id === desk.activeId || sessionLoading.value || sessionBusy.value) {
+  if (!item.id || item.id === desk.activeId || sessionLoading.value || sessionBusy.value || historyBusy.value) {
     return
   }
   const requestId = ++selectionRequest
@@ -195,15 +200,16 @@ async function selectDialogue(item: { id?: string }): Promise<void> {
   try {
     const selected = await getChatSession(item.id)
     const existing = desk.dialogues.find((dialogue) => dialogue.id === selected.id)
-    const traces = existing?.tracesLoaded
+    const page = existing?.tracesLoaded
       ? null
-      : await loadTraceHistory(selected.id)
+      : await getChatSessionHistory(selected.id)
     if (requestId === selectionRequest) {
       desk.select(selected.id)
       desk.active.title = selected.title
-      if (traces) {
-        desk.loadTraces(selected.id, traces)
+      if (page) {
+        desk.loadHistory(selected.id, page)
       }
+      cancelEdit()
       senderRef.value?.clear()
     }
   } catch (error) {
@@ -224,18 +230,115 @@ function sendStarter(item: PromptsItemsProps): void {
   }
 }
 
-/** 供测试直接提交一段文字。 */
+/** 提交一段文字作为新一轮；输入框、推荐任务和测试都走这里。 */
 function submitText(text: string): boolean {
   const dialogue = activeDialogue.value
-  if (!dialogue || sessionLoading.value || sessionBusy.value) {
+  if (!dialogue || sessionLoading.value || sessionBusy.value || historyBusy.value) {
     return false
   }
   const accepted = dialogue.chat.send(text)
   if (accepted) {
     dialogue.nameFrom(text)
     sessionError.value = ''
+    cancelEdit()
   }
   return accepted
+}
+
+/** 一轮回复结束后重新读取历史，拿到新 Trace 的编号和版本；已加载的更早轮次一并保留。 */
+async function refreshHistory(id: string): Promise<void> {
+  const dialogue = desk.dialogues.find((item) => item.id === id)
+  if (!dialogue) {
+    return
+  }
+  const limit = Math.min(HISTORY_MAX, Math.max(HISTORY_PAGE, dialogue.chat.turnCount))
+  historyBusy.value = true
+  try {
+    const page = await getChatSessionHistory(id, { limit })
+    if (!dialogue.chat.streaming) {
+      desk.loadHistory(id, page)
+    }
+  } catch (error) {
+    dialogue.tracesLoaded = false
+    sessionError.value = _errorMessage(error, '读取历史失败，请重新打开会话')
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+/** 在当前分支顶部加载更早的一页。 */
+async function loadEarlier(): Promise<void> {
+  const dialogue = activeDialogue.value
+  const before = dialogue?.chat.oldestTraceId
+  if (!dialogue || !before || locked.value) {
+    return
+  }
+  historyBusy.value = true
+  sessionError.value = ''
+  try {
+    dialogue.chat.prependHistory(await getChatSessionHistory(dialogue.id, { before }))
+  } catch (error) {
+    sessionError.value = _errorMessage(error, '加载更早的对话失败，请重试')
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+/** 切到同一位置的上一个或下一个版本，并用新分支替换消息。 */
+async function switchVersion(item: Bubble, step: -1 | 1): Promise<void> {
+  const dialogue = activeDialogue.value
+  const target = item.versions?.trace_ids[item.versions.index - 1 + step]
+  if (!dialogue || !target || locked.value) {
+    return
+  }
+  historyBusy.value = true
+  sessionError.value = ''
+  try {
+    desk.loadHistory(dialogue.id, await switchChatSessionBranch(dialogue.id, target))
+    cancelEdit()
+  } catch (error) {
+    sessionError.value = _errorMessage(error, '切换版本失败，请重试')
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+/** 在用户气泡原位打开编辑框，预填原文。 */
+function startEdit(item: Bubble): void {
+  if (locked.value || !item.traceId) {
+    return
+  }
+  editingId.value = item.key
+  editDraft.value = item.content ?? ''
+}
+
+/** 关闭编辑框，消息保持原样。 */
+function cancelEdit(): void {
+  editingId.value = ''
+  editDraft.value = ''
+}
+
+/** 以编辑后的内容发送这一轮的新版本。 */
+function confirmEdit(): void {
+  const dialogue = activeDialogue.value
+  if (!dialogue || locked.value || !editDraft.value.trim()) {
+    return
+  }
+  if (dialogue.chat.edit(editingId.value, editDraft.value)) {
+    sessionError.value = ''
+    cancelEdit()
+  }
+}
+
+/** 用原输入重新生成这一轮的回答。 */
+function regenerate(item: Bubble): void {
+  const dialogue = activeDialogue.value
+  if (!dialogue || locked.value || editingId.value) {
+    return
+  }
+  if (dialogue.chat.regenerate(item.key)) {
+    sessionError.value = ''
+  }
 }
 
 /** 把异常整理为会话操作的提示文字。 */
@@ -252,6 +355,10 @@ function traceStatusLabel(status?: TraceStatus): string {
     return '回复已完成'
   }
   return status === 'failed' ? '回复失败' : ''
+}
+
+desk.onSettled = (id) => {
+  void refreshHistory(id)
 }
 
 onMounted(() => {
@@ -276,7 +383,7 @@ defineExpose({ submitText, createDialogue, loadSessions, desk })
   <main class="chat-shell">
     <aside class="session-pane" :class="{ 'session-pane--collapsed': collapsed }">
       <div class="session-clip">
-        <div class="session-body" :inert="collapsed || sessionLoading || sessionBusy">
+        <div class="session-body" :inert="collapsed || sessionLoading || sessionBusy || historyBusy">
           <div class="session-toolbar">
             <h1>会话</h1>
             <el-button
@@ -343,17 +450,78 @@ defineExpose({ submitText, createDialogue, loadSessions, desk })
             @item-click="sendStarter"
           />
         </div>
-        <BubbleList v-else class="chat-list" :list="bubbles">
-          <template #content="{ item }">
-            <div v-if="item.plain" class="bubble-user-content">
-              <span>{{ item.content }}</span>
-              <small v-if="item.traceStatus" class="bubble-trace-status">
-                {{ traceStatusLabel(item.traceStatus) }}
-              </small>
-            </div>
-            <div v-else class="bubble-md" v-html="renderMarkdown(item.content ?? '')" />
-          </template>
-        </BubbleList>
+        <template v-else>
+          <div v-if="activeDialogue.chat.hasMore" class="chat-more">
+            <el-button class="chat-more-button" link :disabled="locked" @click="loadEarlier">
+              加载更早的对话
+            </el-button>
+          </div>
+          <BubbleList class="chat-list" :list="bubbles">
+            <template #content="{ item }">
+              <div v-if="item.plain && editingId === item.key" class="bubble-edit">
+                <el-input
+                  v-model="editDraft"
+                  class="bubble-edit-input"
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 8 }"
+                  aria-label="编辑消息"
+                />
+                <div class="bubble-edit-actions">
+                  <el-button class="bubble-edit-cancel" size="small" @click="cancelEdit">取消</el-button>
+                  <el-button
+                    class="bubble-edit-confirm"
+                    size="small"
+                    type="primary"
+                    :disabled="locked || !editDraft.trim()"
+                    @click="confirmEdit"
+                  >发送</el-button>
+                </div>
+              </div>
+              <div v-else-if="item.plain" class="bubble-user-content">
+                <span>{{ item.content }}</span>
+                <div class="bubble-user-meta">
+                  <span v-if="item.versions && item.versions.total > 1" class="bubble-versions">
+                    <button
+                      class="bubble-version-prev"
+                      type="button"
+                      aria-label="上一个版本"
+                      :disabled="locked || item.versions.index <= 1"
+                      @click="switchVersion(item, -1)"
+                    >&lt;</button>
+                    <span>{{ item.versions.index }} / {{ item.versions.total }}</span>
+                    <button
+                      class="bubble-version-next"
+                      type="button"
+                      aria-label="下一个版本"
+                      :disabled="locked || item.versions.index >= item.versions.total"
+                      @click="switchVersion(item, 1)"
+                    >&gt;</button>
+                  </span>
+                  <button
+                    v-if="item.traceId"
+                    class="bubble-action bubble-edit-start"
+                    type="button"
+                    :disabled="locked || !!editingId"
+                    @click="startEdit(item)"
+                  >编辑</button>
+                  <small v-if="item.traceStatus" class="bubble-trace-status">
+                    {{ traceStatusLabel(item.traceStatus) }}
+                  </small>
+                </div>
+              </div>
+              <div v-else class="bubble-assistant-content">
+                <div class="bubble-md" v-html="renderMarkdown(item.content ?? '')" />
+                <button
+                  v-if="item.traceId && item.settled"
+                  class="bubble-action bubble-regenerate"
+                  type="button"
+                  :disabled="locked || !!editingId"
+                  @click="regenerate(item)"
+                >重新生成</button>
+              </div>
+            </template>
+          </BubbleList>
+        </template>
         <p v-if="activeDialogue?.chat.streaming" class="chat-status">正在回复</p>
         <p v-else-if="failed" class="chat-status">回复中断，可以再次发送</p>
       </div>
@@ -683,10 +851,88 @@ defineExpose({ submitText, createDialogue, loadSessions, desk })
   gap: 4px;
 }
 
-.bubble-trace-status {
-  align-self: flex-end;
+.bubble-user-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
   color: rgb(255 255 255 / 78%);
   font-size: 11px;
+}
+
+.bubble-trace-status {
+  color: inherit;
+  font-size: 11px;
+}
+
+.bubble-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bubble-versions button,
+.bubble-action {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.bubble-versions button:disabled,
+.bubble-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bubble-versions button:focus-visible,
+.bubble-action:focus-visible {
+  outline: 2px solid currentcolor;
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.bubble-assistant-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bubble-regenerate {
+  align-self: flex-start;
+  color: #5b6b88;
+  font-size: 12px;
+}
+
+.bubble-regenerate:not(:disabled):hover {
+  color: #1677ff;
+}
+
+.bubble-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, 60vw);
+}
+
+.bubble-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chat-more {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 8px;
+}
+
+.chat-more-button {
+  color: #1677ff;
+  font-size: 13px;
 }
 
 .bubble-md :deep(p),

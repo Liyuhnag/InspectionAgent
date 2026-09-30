@@ -1,5 +1,5 @@
 import { ApiError, readToken } from './session'
-import type { PersistedSpan, PersistedTrace } from '@/domain/chat/types'
+import type { HistoryPage, PersistedSpan, PersistedTrace } from '@/domain/chat/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
 
@@ -51,16 +51,46 @@ export async function listChatSessionSpans(
   ))
 }
 
-/** 打开指定会话的一轮回复事件流。 */
+/** 读取当前分支路径上的一页轮次；给出 before 时读取它之前更早的轮次。 */
+export async function getChatSessionHistory(
+  sessionId: string,
+  options: { limit?: number; before?: string } = {},
+): Promise<HistoryPage> {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) {
+    query.set('limit', String(options.limit))
+  }
+  if (options.before) {
+    query.set('before', options.before)
+  }
+  const encoded = query.toString()
+  const suffix = encoded ? `?${encoded}` : ''
+  return parse<HistoryPage>(await request(
+    'GET',
+    `/chat-sessions/${encodeURIComponent(sessionId)}/history${suffix}`,
+  ))
+}
+
+/** 切换到指定版本所在的分支，返回切换后的第一页历史。 */
+export async function switchChatSessionBranch(sessionId: string, traceId: string): Promise<HistoryPage> {
+  return parse<HistoryPage>(await request(
+    'PUT',
+    `/chat-sessions/${encodeURIComponent(sessionId)}/active-trace`,
+    { trace_id: traceId },
+  ))
+}
+
+/** 打开指定会话的一轮回复事件流；给出 siblingOf 时作为那条 Trace 的兄弟版本。 */
 export function openChatSessionReply(
   sessionId: string,
   text: string,
   signal: AbortSignal,
+  siblingOf?: string,
 ): Promise<Response> {
   return request(
     'POST',
     `/chat-sessions/${encodeURIComponent(sessionId)}/replies`,
-    { text },
+    siblingOf ? { text, sibling_of: siblingOf } : { text },
     signal,
   )
 }

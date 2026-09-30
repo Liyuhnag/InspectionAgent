@@ -228,3 +228,82 @@ span：
 - 打开已有会话时，消息条数是 trace 数的两倍，顺序为用户、助手交替。助手正文不含 `visible` 为假或非 `text` 的 span。`complete` 显示为完成，`failed` 和 `running` 显示为失败。
 
 依赖 MySQL 或 Redis 的用例在没有本机 `dev.yaml`，或测试库不可用时跳过。前端来源测试用假响应，不要求后端已启动。
+
+## 第二阶段：历史恢复、按需上下文与对话分支
+
+### 表结构
+
+- `traces.parent_trace_id VARCHAR(32)`，可空，外键 `fk_traces_parent_trace_id` 指向 `traces.id`；索引 `ix_traces_session_parent (session_id, parent_trace_id)`。首轮为空。
+- `chat_sessions.active_trace_id VARCHAR(32)`，可空，不建外键（`chat_sessions` 先于 `traces` 创建），由代码保证指向本会话的 Trace。空会话为空。
+- `spans.prompt_version`、`spans.context_rule_version`：`VARCHAR(64)`，可空；`spans.input_digest`：`VARCHAR(64)`，可空。模拟阶段不写。
+- `create_database.py --target <目标> --migrate-branches`：补齐缺少的列、外键和索引；对 `active_trace_id` 为空但有 Trace 的会话，按创建时间把 Trace 串成一条链，`active_trace_id` 设为最后一条。重复执行结果不变。
+
+### 路径与版本
+
+- 当前路径：从 `active_trace_id` 沿父级上溯到首轮，再按从早到晚排列。
+- 兄弟：`parent_trace_id` 相同的 Trace，按创建时间排序；版本序号从 1 开始。
+- 分支末端：从某条 Trace 出发，反复走到创建时间最新的子 Trace，直到没有子 Trace。
+
+### 回复接口
+
+`POST /chat-sessions/{id}/replies`，请求体 `{"text": "...", "sibling_of": "<trace_id>"}`，`sibling_of` 可省略。
+
+- 省略时是正常发送：新 Trace 的父级为当前 `active_trace_id`。
+- 给出时是编辑或重新生成：新 Trace 的父级等于 `sibling_of` 那条 Trace 的父级。重新生成由前端传入原来的用户输入，编辑传入新内容。
+- `sibling_of` 不存在或不属于该会话时返回 404「会话不存在」，不建 Trace。
+- 建 Trace 的同一事务里把 `active_trace_id` 设为新 Trace。其余行为（空白 400、标题、SSE 事件、Span 写入）与第 4 步相同。
+
+### 切换版本
+
+`PUT /chat-sessions/{id}/active-trace`，请求体 `{"trace_id": "..."}`。把 `active_trace_id` 设为这条 Trace 的分支末端，返回与 `GET /history`（默认参数）相同的内容。Trace 不存在或不属于该会话时返回 404「会话不存在」。
+
+### 历史接口
+
+`GET /chat-sessions/{id}/history?limit=20&before=<trace_id>`
+
+- `limit` 取 1 到 100，默认 20，超出范围返回 422。
+- 省略 `before` 时返回路径上最近的 `limit` 轮；给出时返回路径上位于它之前的最近 `limit` 轮。`before` 不在当前路径上时返回 400「分页位置无效」。
+- 响应 `{"turns": [...], "has_more": true|false}`，`turns` 按从早到晚排列，`has_more` 表示更早还有轮次。
+- 每轮：`trace_id`、`user_text`、`status`、`created_at`、`reply`（该 Trace 中 `visible` 为真的 `text` Span 按 `sequence` 拼接）、`versions`（`{"index": n, "total": m, "trace_ids": [...]}`，同父兄弟按创建时间排列）。
+- 除会话校验外只查两次：全部 Trace 元数据一次，本页 Trace 的可见 text Span 一次。
+- 越权或会话不存在时返回 404「会话不存在」。
+
+### 上下文策略
+
+`backend/app/agents/context_strategies.py`：
+
+- `ContextMessage(role, content)`，`role` 为 `system`、`user`、`assistant`。
+- `ContextWindow(messages, rule_version, digest)`；`digest` 是消息列表按 `[{"role","content"}]` 以紧凑 JSON（`ensure_ascii=False`）序列化后的 SHA-256。
+- `ContextStrategy` 为抽象基类，属性 `version`、`recent_turns`、`include_index`、`history_tools`、`upstream_span_types`、`token_budget`；方法 `build(turns, user_text) -> ContextWindow` 和 `select_upstream(spans)`。
+- `DefaultContextStrategy`：`version="default-v1"`，最近 2 轮原文，放目录，不允许取历史工具，本轮上游只看状态为 `complete` 的 `text`，上限 8000。
+- `strategy_for(agent_name)`：按登记表返回策略；未登记或为空时返回默认策略。
+- 组装顺序：目录（一条 system 消息，没有更早轮次时省略）→ 最近原文轮次（user、assistant 交替）→ 本轮用户输入。
+- 只使用状态为 `complete` 的轮次，失败和进行中的跳过。
+- 目录每行 `- [轮次 <trace_id>] 用户：<用户输入前 40 字> ｜ 回答：<摘要，没有摘要时回答前 60 字>`；允许 `read_turn` 时，目录末尾说明可按编号读取。
+- token 估算：中日韩字符每字 1，其余字符每 4 个 1，向上取整。历史部分（不含本轮输入）超出上限时，先把最早的原文轮次降为目录行，直到原文部分不超出上限；仍超出再从最早的目录行开始丢弃。
+
+### 取历史工具
+
+`backend/app/tools/history_tools.py` 的 `HistoryTools(engine, username, session_id, current_trace_id)`：
+
+- 可见范围：`current_trace_id` 的祖先中状态为 `complete` 的轮次，以及这些轮次里的 Span。当前用户、当前会话之外，或不在范围内的，返回「没有找到」，不抛异常。
+- `list_turns(before=None, limit=10)`：范围内位于 `before` 之前最近的 `limit` 条目录行。
+- `read_turn(turn_id, full=False)`：返回用户输入和回答；回答超过 1000 字且未要求 `full` 时，有摘要返回摘要，没有摘要返回前 1000 字，并提示可用 `full=True`。
+- `read_step(span_id)`：返回该 Span 的原文。
+- 单次返回不超过 4000 字，超出截断并注明；同一实例累计返回超过 16000 字后，后续调用只返回「本轮取回的历史已达上限」。
+
+### 前端
+
+- 打开会话用 `GET /history` 恢复，一个会话只发一次历史请求；列表顶部有「加载更早的对话」，`has_more` 为假时不显示。
+- 用户气泡在有多个版本时显示「< 序号 / 总数 >」，点击切换调用 `PUT /active-trace` 并用返回内容替换消息。
+- 用户气泡有「编辑」：原位出现输入框，预填原文；确认后丢弃该轮及之后的消息并以 `sibling_of` 发送新内容，取消则恢复原样；空白不能确认。
+- 助手气泡有「重新生成」：丢弃该轮及之后的消息，以原用户输入和 `sibling_of` 重新发送。
+- 流式回复期间、加载期间，编辑、重新生成、切换版本、加载更早都不可用；刚发送、还没拿到 Trace 编号的消息也不可用。
+- 一次回复结束（完成或失败）后重新读取历史，拿到新 Trace 的编号和版本信息。
+
+### 验收
+
+- 重新生成和编辑后，界面只显示新分支；切回旧版本能看到旧分支的后续轮次。
+- 刷新后显示的仍是最后所在的分支。
+- 50 轮的会话打开时只发一次历史请求。
+- 上下文组装和取历史工具满足上面的规则，并有测试覆盖。

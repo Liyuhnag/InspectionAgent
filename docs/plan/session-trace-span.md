@@ -147,3 +147,49 @@
 ## 不做的内容
 
 不接真实模型，不调用 `agents/`、`graphs/`、`prompts/`、`tools/`。不渲染思考、工具调用、MCP、人工介入和上下文压缩；这些类型只留在 span 的类型里。不做给模型喂上下文的对话记忆，也不为记忆另建表。不修改登录用的 `/session`。不把 token 放进 URL。不另建消息表，不为每个 SSE 片段写一行。
+
+## 第二阶段：历史恢复、按需上下文与对话分支
+
+### 采用的方案
+
+`docs/solution/session-trace-span.md`「第二阶段方案」中的 1A（Trace 组成树）、2A（专用历史接口）、3C（最近原文 + 目录，策略模式，按需取历史工具）。
+
+### 改动目录和模块
+
+- `backend/app/chats/trace.py`：加 `parent_trace_id`。
+- `backend/app/chats/chat_session.py`：加 `active_trace_id`。
+- `backend/app/chats/span.py`：加 `prompt_version`、`context_rule_version`、`input_digest`。
+- `backend/app/chats/conversation_tree.py`：由一个会话的全部 Trace 计算路径、兄弟版本和分支末端。
+- `backend/app/chats/history.py`：按路径读取可见正文，组装成「轮次」，供历史接口、上下文策略和取历史工具共用。
+- `backend/app/chats/chat_reply.py`：发送、编辑、重新生成共用一个入口，按父级建 Trace 并更新 `active_trace_id`；切换版本。
+- `backend/app/api/routes/traces.py`：`GET /history`、`PUT /active-trace`，回复接口接受 `sibling_of`。
+- `backend/app/agents/context_strategies.py`：`ContextStrategy`、`DefaultContextStrategy`、各 agent 策略的登记表和查找函数。
+- `backend/app/tools/history_tools.py`：`list_turns`、`read_turn`、`read_step`，限定在当前路径内。
+- `backend/scripts/create_database.py`：`--migrate-branches` 加列、加外键和索引，回填已有数据。
+- `frontend/src/api/chatSessions.ts`、`frontend/src/domain/chat/`、`frontend/src/views/ChatView.vue`：改用历史接口；版本切换、原位编辑、重新生成、加载更早。
+
+### 实施步骤
+
+1. 分支树：模型字段、路径计算、回复入口按父级建 Trace、切换版本接口、迁移选项。
+2. 历史接口：两次查询、分页、版本信息。
+3. 上下文：策略基类、默认策略、登记表；取历史工具；Span 审计列和输入指纹。
+4. 前端：历史恢复、版本切换、编辑、重新生成、加载更早。
+5. 迁移测试库，跑后端和前端全部测试，更新总结。
+
+### 测试范围
+
+- 路径：线性、重新生成产生兄弟、编辑产生兄弟、切换到兄弟后落到该分支最新末端。
+- 回复：`sibling_of` 指向别的会话或不存在时返回 404；新 Trace 的父级正确；`active_trace_id` 更新。
+- 历史：只含当前路径；每轮正文只拼可见 `text` Span；分页的 `before`、`limit`、`has_more`；非法 `before` 返回 400；越权 404；查询次数不随轮数增长。
+- 上下文：最近 2 轮原文 + 目录；失败轮次跳过；超出 token 上限时原文降为目录行、目录行从最早丢弃；未登记的 agent 用默认策略；输入指纹稳定。
+- 取历史工具：只能读当前路径上已完成的轮次和其中的 Span；越界按不存在处理；单次和总量上限。
+- 迁移：回填后每个会话串成一条链，重复执行不改变结果。
+- 前端：历史恢复、加载更早、版本切换、编辑确认和取消、重新生成、流式期间禁止编辑和切换。
+
+### 不做的内容
+
+- 不删除分支，不合并分支。
+- 不生成摘要和跨轮总结。
+- 不做相关性检索。
+- 不接 LangChain、LangGraph 检查点和真实模型；上下文输出中立的消息对象，取历史工具先是普通类方法，接入 agent 时再包装成工具。
+- 不做人工介入。

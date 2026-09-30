@@ -33,6 +33,22 @@ git checkout -b feat/<需求名>
 
 改完先停下来，等审查。审查通过后，会另发一条消息要求提交。收到这条消息之前，不执行 commit。
 
+### 推送
+
+仓库有两个远端，要求推送时两个都推，推同一个分支：
+
+| 远端 | 地址 |
+| --- | --- |
+| `origin` | Codeup：`git@codeup.aliyun.com:67c56af4e77e9167fa2fa6df/InspectionAgent.git` |
+| `github` | GitHub：`git@github.com:Liyuhnag/InspectionAgent.git` |
+
+```bash
+git push -u origin <分支>
+git push github <分支>
+```
+
+任一远端推送失败时，报告失败的远端和报错原文，不要只推成功的一个就算完成。
+
 ### Commit 信息
 
 提交说明使用中文，并遵循 Conventional Commits：
@@ -302,7 +318,9 @@ backend/
 │   ├── dev.yaml        本机文件，不提交
 │   └── dev.yaml.example
 ├── tests/
-└── pyproject.toml
+├── .python-version     固定 Python 版本，提交
+├── pyproject.toml
+└── uv.lock             依赖锁文件，提交
 frontend/
 ├── public/
 └── src/
@@ -321,8 +339,28 @@ docs/
 └── goodCode/           值得沿用的设计
 ```
 
+后端 Python 环境见第 10 节。
+
 `backend/config/dev.yaml` 同时包含 `mysql`、`jwt` 和 `redis`。同一台 MySQL、同一台 Redis 都用 `database` 做开发库，用 `test_database` 做测试库。Redis 密码可以为空。仓库只提交 `dev.yaml.example`，值为空。本机文件含密码或密钥，不提交。开发和测试都读这一份文件。
 
 ## 9. 数据库初始化脚本
 
 新增数据库表时，必须同步维护可重复运行的初始化脚本，不能只依赖应用启动时自动建表。统一使用 `backend/scripts/create_database.py`，并显式指定 `--target development` 或 `--target test`。脚本从本机 `backend/config/dev.yaml` 读取连接信息，先幂等创建目标数据库，再初始化该数据库所需的表。新增或修改模型表时，同步更新脚本中的初始化模型列表。脚本不得输出密码、密钥或连接串；运行开发库脚本前确认目标为 `development`。
+
+## 10. Python 环境
+
+后端用 uv 管理 Python 和依赖，Python 版本固定为 3.11.10。版本同时写在 `backend/.python-version` 和 `pyproject.toml` 的 `requires-python = "==3.11.10"` 里，改版本时两处一起改。不再用 `pip`、`python -m venv` 或系统自带的 Python 装依赖。
+
+在 `backend/` 目录下操作：
+
+```bash
+uv python install 3.11.10    # 本机没有这个版本时
+uv sync                      # 按 uv.lock 创建 .venv，包含 dev 依赖组
+uv run pytest                # 跑测试
+uv run python scripts/create_database.py --target test
+uv run uvicorn app.main:create_app --factory --reload
+```
+
+- 新增运行依赖用 `uv add <包名>`，只给开发和测试用的依赖用 `uv add --dev <包名>`。不要手改 `.venv`，也不要只改 `pyproject.toml` 不更新锁文件。
+- `uv.lock` 和 `.python-version` 提交；`.venv` 不提交。
+- 依赖有变化时，`pyproject.toml` 和 `uv.lock` 放在同一个 `chore` 提交里。

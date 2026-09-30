@@ -2,7 +2,7 @@
 name = "inspection-agent"
 version = "0.1.0"
 description = "巡检多 agent 后端"
-requires-python = ">=3.11"
+requires-python = "==3.11.10"
 dependencies = [
     "PyMySQL",
     "PyYAML",
@@ -10,13 +10,18 @@ dependencies = [
     "PyJWT",
     "fastapi",
     "redis",
+    "uvicorn",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest",
     "httpx",
 ]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

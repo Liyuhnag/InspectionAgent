@@ -73,6 +73,40 @@
 - 不实现真实模型调用、Agent 或 Graph 流程。
 - 不改变登录、注册、会话改名 API 或气泡布局。
 
+## 第 4 步：Span 建模实施计划
+
+### 采用的方案
+
+`docs/solution/session-trace-span.md` 里推荐的方案 A：生成期间正文只在内存中累积，结束、失败或断开时写一次 Span；数据库调用放到线程池；启动时把残留的 `running` 标为失败。Span 表按方案里的字段表扩展，为多 agent 归属和单步摘要留好列。
+
+### 改动目录和模块
+
+- `backend/app/chats/span.py`：扩展 Span 字段；提供按 Trace 列出、把过期的 `running` 标为失败，以及按 UTF-8 字节截断原文。
+- `backend/app/chats/trace.py`：提供把过期的 `running` Trace 标为失败的查询。
+- `backend/app/chats/chat_reply.py`：去掉逐片段写库；结束时在一个事务里写 Span 和 Trace；数据库调用经线程池执行，并在取消时仍能完成写入；提供启动清理。
+- `backend/app/api/routes/traces.py`：Span 响应带上新字段。
+- `backend/app/main.py`：建表后执行启动清理。
+- `backend/scripts/create_database.py`：增加显式的 `--rebuild-spans`，按新结构重建 `spans` 表。
+- `backend/tests/`：覆盖流式期间不写正文、结束一次写入、中断保留已发送部分、截断、启动清理和新字段。
+- `frontend/src/domain/chat/`：恢复历史时只拼接 `visible` 为真的 `text` Span。
+
+### 实施步骤
+
+1. 扩展 Span 模型和截断工具，写单元测试。
+2. 改写 `ChatReplyService`：内存累积、一次写入、线程池执行、取消时屏蔽取消以完成写入。
+3. 实现启动清理，在 `create_app` 中调用，时限 10 分钟。
+4. 更新 Span 接口字段和前端恢复规则。
+5. 给初始化脚本加 `--rebuild-spans`，重建测试库的 `spans` 表后跑 MySQL 用例。开发库在审查时由你决定是否重建。
+6. 运行后端和前端测试。完成后停下等审查，不提交。
+
+### 不做的内容
+
+- 不建 `context_summaries` 表，不生成摘要，不实现压缩。
+- 不接真实模型、Agent、Graph 或 LangChain 回调；`agent_name`、`node`、`parent_span_id`、`model` 在模拟阶段为空。
+- 不接对象存储；超过上限的原文只截断。
+- 不做断线续传，不改 SSE 事件格式。
+- 不做兼容迁移；旧 `spans` 表只能通过显式选项重建。
+
 ## 采用的方案
 
 方案 A。见 `docs/solution/session-trace-span.md`。

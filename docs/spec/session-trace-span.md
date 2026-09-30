@@ -57,6 +57,48 @@
 - `POST /chat-sessions/{id}/replies` 在验证会话归属和非空 `text` 后创建 Trace 并返回 SSE。空白 `text` 返回 400「不能为空」。未登录返回 401；会话不存在或越权返回 404。事件保持 `chunk`（仅有 `text`）、`done`（`{}`）和 `error`（`detail`）；旧 `POST /replies` 删除。
 - 前端 SSE 请求必须带当前会话编号。重新打开会话时读取 Trace，按顺序恢复用户输入和 `running`、`complete`、`failed` 状态；助手消息正文的持久化留到第 4 步。
 
+## 第 4 步：Span 行为规格
+
+表结构：
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | `VARCHAR(32)` 主键 | 服务端生成 |
+| `trace_id` | `VARCHAR(32)` 外键 | 所属 Trace |
+| `sequence` | `INT` | 同一 Trace 内唯一，从 1 开始 |
+| `type` | `VARCHAR(32)` | `agent`、`llm`、`tool_call`、`mcp_call`、`thinking`、`text`、`human_input` |
+| `status` | `VARCHAR(16)` | `running`、`complete`、`failed` |
+| `parent_span_id` | `VARCHAR(32)`，可空 | 外键指向 `spans.id` |
+| `agent_name`、`node` | `VARCHAR(64)`，可空 | 所属 agent 注册名、workflow 节点名 |
+| `visible` | 布尔 | 是否进入用户气泡 |
+| `model` | `VARCHAR(128)`，可空 | 仅 `llm` 类型填写 |
+| `text` | `MEDIUMTEXT` | 输出原文，写入上限 64 KiB（UTF-8 字节） |
+| `truncated` | 布尔 | 原文是否被截断 |
+| `summary` | `MEDIUMTEXT`，可空 | 单步摘要 |
+| `summarized_at` | `DATETIME(6)`，可空 | 摘要生成时间 |
+| `tokens`、`summary_tokens` | `INT`，可空 | 原文与摘要的 token 数 |
+| `started_at` | `DATETIME(6)` | 开始时间，UTC |
+| `ended_at` | `DATETIME(6)`，可空 | 结束时间，UTC |
+
+`(status, started_at)` 建索引，供启动清理使用。
+
+写入：
+
+- 发送时，在一个事务里创建 `running` 的 Trace 和一条 Span：`sequence=1`、`type=text`、`status=running`、`visible=true`、`text` 为空、`truncated=false`，其余可空列为空，`started_at` 为当前时间。
+- 推送片段期间不写 Span。
+- 所有片段发出后，在一个事务里把累积正文写入 Span，Span 和 Trace 都标为 `complete`，写入 `ended_at`，然后发 `done`，data 为 `{"trace_id":"...","span_id":"..."}`。
+- 发生错误时写入已累积正文，Span 和 Trace 标为 `failed`，然后发 `error`。客户端断开或任务被取消时同样写入并标为 `failed`，不发事件。取消期间的这次写入不能被取消打断。
+- 写入前按 UTF-8 字节截断到 64 KiB，截断点落在字符边界；截断时 `truncated=true`。推送给客户端的片段不截断。
+- 所有数据库调用在线程池中执行。
+
+启动清理：应用启动时，把 `created_at` 早于当前时间 10 分钟、仍为 `running` 的 Trace，以及 `started_at` 早于当前时间 10 分钟、仍为 `running` 的 Span 标为 `failed`，Span 同时写入 `ended_at`。10 分钟以内的 `running` 不动。
+
+接口：`GET /chat-sessions/{id}/traces/{trace_id}/spans` 先确认会话属于当前用户，再确认 Trace 属于该会话；否则统一返回 404「会话不存在」。成功时按 `sequence` 升序返回 `id`、`sequence`、`type`、`status`、`parent_span_id`、`agent_name`、`node`、`visible`、`model`、`text`、`truncated`、`started_at`、`ended_at`。不返回 `summary` 和 token 数。
+
+恢复：打开已有会话时按 Trace 创建时间排列，每条 Trace 恢复一条用户消息和一条助手消息。助手正文只拼接 `visible` 为真且 `type=text` 的 Span，按 `sequence` 排序。Trace 为 `complete` 时助手消息为完成；`failed` 或 `running` 时为失败。
+
+建表：应用启动与 `backend/scripts/create_database.py` 按 `users`、`chat_sessions`、`traces`、`spans` 的顺序创建。已有旧结构的 `spans` 表不会自动变更；`create_database.py --target <目标> --rebuild-spans` 删除并按新结构重建 `spans` 表，其中的数据会丢失。
+
 ## 行为说明
 
 助手回复由后端用 SSE 推送。模拟阶段不调用模型。固定回复是一段较长的巡检说明，全文由 `mock_reply` 生成，包含用户输入、1 号线压力异常、3 号泵房阀门核对，以及备用泵、照明、消防和配电间的补记。长度要够一次回复被切成很多段。
@@ -108,13 +150,13 @@ trace：
 
 span：
 
-- 一条 trace 在模拟阶段只有一条 span。列包括所属 trace、顺序、类型、文本。主键是 32 位十六进制字符串。顺序从 1 开始。
-- 类型允许 `text`、`thinking`、`tool_call`、`mcp_call`、`human_input`、`context`。模拟阶段只写 `text`。
-- 开始推送前插入这条 span，文本为空。每发出一个 `chunk`，把已累计的助手正文写回同一行。
-- 流正常结束时 trace 为 `complete`。失败或中断时 trace 为 `failed`，span 保留已写回的文本。
+- 一条 trace 在模拟阶段只有一条 span。列见「第 4 步：Span 行为规格」。主键是 32 位十六进制字符串。顺序从 1 开始。
+- 类型允许 `agent`、`llm`、`tool_call`、`mcp_call`、`thinking`、`text`、`human_input`。模拟阶段只写 `text`。
+- 开始推送前插入这条 span，文本为空，状态为 `running`。推送期间不写库；结束、失败或中断时一次写入已推送的正文。
+- 流正常结束时 trace 和 span 为 `complete`。失败或中断时都为 `failed`，span 保留已推送的文本。
 - 列表按顺序从小到大。
 - 本步的 `done` 事件改为 `{"trace_id":"...","span_id":"..."}`。`chunk` 仍然只有 `text`。
-- 打开已有会话时，按 trace 的顺序恢复消息。每条 trace 先放用户消息，正文是该轮用户输入，状态为完成。再放助手消息，正文只拼接类型为 `text` 的 span。trace 为 `complete` 时助手消息为完成；`failed` 或仍为 `running` 时助手消息为失败。没有 trace 的会话仍显示空会话首页。
+- 打开已有会话时，按 trace 的顺序恢复消息。每条 trace 先放用户消息，正文是该轮用户输入，状态为完成。再放助手消息，正文只拼接 `visible` 为真且类型为 `text` 的 span。trace 为 `complete` 时助手消息为完成；`failed` 或仍为 `running` 时助手消息为失败。没有 trace 的会话仍显示空会话首页。
 
 ## 接口、状态和模块边界
 
@@ -135,7 +177,7 @@ span：
 | `POST /chat-sessions/{id}/replies` | 第 3 步 | 先有一条 `running` trace，再 SSE | 401；404 会话不存在；400 不能为空 |
 | `GET /chat-sessions/{id}/traces/{trace_id}/spans` | 第 4 步 | `{"spans":[...]}` | 401；404 会话不存在或 trace 不属于该会话 |
 
-会话对象含 `id`、`title`、`updated_at`。trace 对象含 `id`、`user_text`、`status`、`created_at`。span 对象含 `id`、`sequence`、`type`、`text`。时间用 ISO 8601 字符串。响应里不返回别的用户的用户名以外的登录信息；会话对象可以带 `username`，其值必须是当前用户。
+会话对象含 `id`、`title`、`updated_at`。trace 对象含 `id`、`user_text`、`status`、`created_at`。span 对象的字段见「第 4 步：Span 行为规格」。时间用 ISO 8601 字符串。响应里不返回别的用户的用户名以外的登录信息；会话对象可以带 `username`，其值必须是当前用户。
 
 前端请求继续使用 `frontend/src/api/session.ts` 里的 `satoken`。SSE 来源放在 `frontend/src/domain/chat/`，由 `ChatView` 在未传入测试来源时使用。第 1 步它请求 `POST /replies`。第 3 步改为请求当前会话的 `POST /chat-sessions/{id}/replies`。
 
@@ -177,9 +219,12 @@ span：
 
 第 4 步：
 
-- 一条完成的 trace 只有一条 `sequence` 为 1、类型为 `text` 的 span，文本等于固定回复全文。
-- 中断后 span 文本等于已经发出的 `chunk` 之和，trace 为 `failed`。
+- 一条完成的 trace 只有一条 `sequence` 为 1、类型为 `text`、`visible` 为真的 span，文本等于固定回复全文，状态为 `complete`，`ended_at` 有值。
+- 推送期间 span 文本仍为空、状态为 `running`。
+- 中断后 span 文本等于已经发出的 `chunk` 之和，span 和 trace 为 `failed`。
+- 超过 64 KiB 的正文按字符边界截断，`truncated` 为真；未超过时为假。
+- 启动清理把超过 10 分钟的 `running` trace 和 span 标为 `failed`，10 分钟内的不变。
 - `done` 带有这条 trace 和 span 的编号。`chunk` 仍然只有 `text`。
-- 打开已有会话时，消息条数是 trace 数的两倍，顺序为用户、助手交替。`complete` 显示为完成，`failed` 和 `running` 显示为失败。
+- 打开已有会话时，消息条数是 trace 数的两倍，顺序为用户、助手交替。助手正文不含 `visible` 为假或非 `text` 的 span。`complete` 显示为完成，`failed` 和 `running` 显示为失败。
 
 依赖 MySQL 或 Redis 的用例在没有本机 `dev.yaml`，或测试库不可用时跳过。前端来源测试用假响应，不要求后端已启动。

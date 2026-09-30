@@ -2,6 +2,7 @@
 """持久化 Trace 中的有序执行片段，并提供只涉及 Span 表的查询。"""
 
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import Boolean
 from sqlalchemy import DateTime
@@ -20,11 +21,32 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import mapped_column
 
 from app.db.crud_model import CrudModel
+from app.db.enum_column import string_enum
 
 SPAN_TEXT_LIMIT = 64 * 1024
 
 _LongText = Text().with_variant(MEDIUMTEXT(), "mysql")
 _PreciseTime = DateTime(timezone=True).with_variant(DATETIME(fsp=6), "mysql")
+
+
+class SpanType(StrEnum):
+    """一步执行的类型。"""
+
+    AGENT = "agent"
+    LLM = "llm"
+    TOOL_CALL = "tool_call"
+    MCP_CALL = "mcp_call"
+    THINKING = "thinking"
+    TEXT = "text"
+    HUMAN_INPUT = "human_input"
+
+
+class SpanStatus(StrEnum):
+    """一步执行的运行状态。"""
+
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
 
 
 class Span(CrudModel):
@@ -39,8 +61,8 @@ class Span(CrudModel):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     trace_id: Mapped[str] = mapped_column(String(32), ForeignKey("traces.id"), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    type: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    type: Mapped[SpanType] = mapped_column(string_enum(SpanType, 32), nullable=False)
+    status: Mapped[SpanStatus] = mapped_column(string_enum(SpanStatus, 16), nullable=False)
     parent_span_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("spans.id"), nullable=True)
     agent_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     node: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -66,8 +88,8 @@ class Span(CrudModel):
         """把开始时间早于给定时刻、仍为 running 的 Span 标为 failed，不提交。"""
         query = (
             update(cls)
-            .where(cls.status == "running", cls.started_at < before)
-            .values(status="failed", ended_at=ended_at)
+            .where(cls.status == SpanStatus.RUNNING, cls.started_at < before)
+            .values(status=SpanStatus.FAILED, ended_at=ended_at)
         )
         session.execute(query)
 

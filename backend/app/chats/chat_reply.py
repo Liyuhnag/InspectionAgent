@@ -18,8 +18,11 @@ from app.chats.mock_reply import iter_chunks
 from app.chats.mock_reply import mock_reply
 from app.chats.span import SPAN_TEXT_LIMIT
 from app.chats.span import Span
+from app.chats.span import SpanStatus
+from app.chats.span import SpanType
 from app.chats.span import clip_text
 from app.chats.trace import Trace
+from app.chats.trace import TraceStatus
 
 _DEFAULT_TITLE = "新会话"
 _TITLE_LENGTH = 16
@@ -50,7 +53,7 @@ class ChatReplyService:
                 id=trace_id,
                 session_id=chat_session.id,
                 user_text=user_text,
-                status="running",
+                status=TraceStatus.RUNNING,
                 created_at=created_at,
             )
             span_id = uuid4().hex
@@ -58,8 +61,8 @@ class ChatReplyService:
                 id=span_id,
                 trace_id=trace_id,
                 sequence=1,
-                type="text",
-                status="running",
+                type=SpanType.TEXT,
+                status=SpanStatus.RUNNING,
                 visible=True,
                 text="",
                 truncated=False,
@@ -88,20 +91,20 @@ class ChatReplyService:
                 accumulated.append(chunk)
                 payload = json.dumps({"text": chunk}, ensure_ascii=False)
                 yield f"event: chunk\ndata: {payload}\n\n"
-            await self._finish(trace_id, span_id, "".join(accumulated), "complete")
+            await self._finish(trace_id, span_id, "".join(accumulated), completed=True)
             finished = True
             payload = json.dumps({"trace_id": trace_id, "span_id": span_id})
             yield f"event: done\ndata: {payload}\n\n"
         except Exception:
             # 回复生成或发送边界异常只返回固定错误，不向客户端暴露内部信息。
             if not finished:
-                await self._finish(trace_id, span_id, "".join(accumulated), "failed")
+                await self._finish(trace_id, span_id, "".join(accumulated), completed=False)
                 finished = True
             payload = json.dumps({"detail": "回复失败"}, ensure_ascii=False)
             yield f"event: error\ndata: {payload}\n\n"
         finally:
             if not finished:
-                await self._finish(trace_id, span_id, "".join(accumulated), "failed")
+                await self._finish(trace_id, span_id, "".join(accumulated), completed=False)
 
     def fail_stale_replies(self) -> None:
         """把超过时限仍为 running 的 Trace 和 Span 标为 failed，供进程启动时清理残留。"""
@@ -112,23 +115,23 @@ class ChatReplyService:
             Span.fail_running_before(session, before, now)
             session.commit()
 
-    async def _finish(self, trace_id: str, span_id: str, text: str, status: str) -> None:
+    async def _finish(self, trace_id: str, span_id: str, text: str, completed: bool) -> None:
         """在线程池中写入最终结果；屏蔽取消，保证客户端断开时也能写完。"""
         with anyio.CancelScope(shield=True):
-            await anyio.to_thread.run_sync(self._write_result, trace_id, span_id, text, status)
+            await anyio.to_thread.run_sync(self._write_result, trace_id, span_id, text, completed)
 
-    def _write_result(self, trace_id: str, span_id: str, text: str, status: str) -> None:
-        """在一个事务里写入 Span 正文与状态，以及 Trace 状态。"""
+    def _write_result(self, trace_id: str, span_id: str, text: str, completed: bool) -> None:
+        """在一个事务里写入 Span 正文与状态，以及 Trace 状态；completed 为假时两者都标为失败。"""
         stored, truncated = clip_text(text, self._text_limit)
         with Session(self._engine) as session:
             trace = Trace.get(session, trace_id)
             span = Span.get(session, span_id)
             if trace is not None:
-                trace.status = status
+                trace.status = TraceStatus.COMPLETE if completed else TraceStatus.FAILED
             if span is not None:
                 span.text = stored
                 span.truncated = truncated
-                span.status = status
+                span.status = SpanStatus.COMPLETE if completed else SpanStatus.FAILED
                 span.ended_at = datetime.now(UTC)
             session.commit()
 

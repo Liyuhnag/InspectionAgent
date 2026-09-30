@@ -10,13 +10,18 @@ from datetime import timedelta
 
 import anyio
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import delete
 from sqlalchemy import create_engine
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 from sqlalchemy import update
+from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.schema import CreateTable
 
 from app.api.auth import TOKEN_HEADER
 from app.api.routes.traces import ClosingStreamingResponse
@@ -367,6 +372,45 @@ def test_客户端断开时响应关闭生成器并写入失败状态() -> None:
         assert trace_status == "failed"
         assert span.status == "failed"
         assert span.text.startswith(sent)
+    finally:
+        _cleanup(engine, codes, tokens)
+        engine.dispose()
+
+
+def test_类型和状态只接受枚举中定义的值() -> None:
+    """写入或读出未定义的类型、状态都报错；MySQL 仍建 VARCHAR 列，不建 ENUM 或 CHECK。"""
+    engine, codes, client, tokens = _setup()
+    try:
+        session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
+        trace_id, span_id = ChatReplyService(engine).begin_reply(session_id, _USERS[0], "枚举场景")
+        invalid_writes = ((Span, span_id, "type", "unknown"), (Span, span_id, "status", "paused"),
+                          (Trace, trace_id, "status", "paused"))
+        for model, row_id, column, value in invalid_writes:
+            with Session(engine) as session:
+                row = model.get(session, row_id)
+                setattr(row, column, value)
+                with pytest.raises(StatementError):
+                    session.commit()
+
+        with Session(engine) as session:
+            session.execute(sql_text("UPDATE spans SET status = 'paused' WHERE id = :id"), {"id": span_id})
+            session.execute(sql_text("UPDATE traces SET status = 'paused' WHERE id = :id"), {"id": trace_id})
+            session.commit()
+        for model, row_id in ((Span, span_id), (Trace, trace_id)):
+            with Session(engine) as session:
+                with pytest.raises(LookupError):
+                    model.get(session, row_id)
+        with Session(engine) as session:
+            session.execute(sql_text("UPDATE spans SET status = 'running' WHERE id = :id"), {"id": span_id})
+            session.execute(sql_text("UPDATE traces SET status = 'running' WHERE id = :id"), {"id": trace_id})
+            session.commit()
+
+        span_ddl = str(CreateTable(Span.__table__).compile(dialect=mysql.dialect()))
+        trace_ddl = str(CreateTable(Trace.__table__).compile(dialect=mysql.dialect()))
+        assert "type VARCHAR(32)" in span_ddl
+        assert "status VARCHAR(16)" in span_ddl
+        assert "status VARCHAR(16)" in trace_ddl
+        assert all(word not in ddl for word in ("ENUM", "CHECK") for ddl in (span_ddl, trace_ddl))
     finally:
         _cleanup(engine, codes, tokens)
         engine.dispose()

@@ -2,6 +2,7 @@
 """持久化一轮用户请求及其运行状态。"""
 
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
@@ -15,6 +16,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import mapped_column
 
 from app.db.crud_model import CrudModel
+from app.db.enum_column import string_enum
+
+
+class TraceStatus(StrEnum):
+    """一轮请求的运行状态。"""
+
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
 
 
 class Trace(CrudModel):
@@ -30,7 +40,7 @@ class Trace(CrudModel):
         nullable=False,
     )
     user_text: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[TraceStatus] = mapped_column(string_enum(TraceStatus, 16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     @classmethod
@@ -42,5 +52,9 @@ class Trace(CrudModel):
     @classmethod
     def fail_running_before(cls, session: Session, before: datetime) -> None:
         """把创建时间早于给定时刻、仍为 running 的 Trace 标为 failed，不提交。"""
-        query = update(cls).where(cls.status == "running", cls.created_at < before).values(status="failed")
+        query = (
+            update(cls)
+            .where(cls.status == TraceStatus.RUNNING, cls.created_at < before)
+            .values(status=TraceStatus.FAILED)
+        )
         session.execute(query)

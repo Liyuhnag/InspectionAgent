@@ -99,6 +99,7 @@ def _cleanup(engine: Engine, codes: MemoryRedis, tokens: dict[str, str]) -> None
         session_ids = select(ChatSession.id).where(ChatSession.username.in_(_USERS))
         trace_ids = select(Trace.id).where(Trace.session_id.in_(session_ids))
         session.execute(delete(Span).where(Span.trace_id.in_(trace_ids)))
+        session.execute(update(Trace).where(Trace.session_id.in_(session_ids)).values(parent_trace_id=None))
         session.execute(delete(Trace).where(Trace.session_id.in_(session_ids)))
         session.execute(delete(ChatSession).where(ChatSession.username.in_(_USERS)))
         session.commit()

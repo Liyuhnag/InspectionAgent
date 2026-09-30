@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Trace 查询和会话回复接口。"""
+"""Trace 查询、对话历史、版本切换和会话回复接口。"""
 
 from datetime import UTC
 from datetime import datetime
@@ -7,6 +7,7 @@ from datetime import datetime
 import anyio
 from fastapi import APIRouter
 from fastapi import HTTPException
+from fastapi import Query
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -17,14 +18,27 @@ from starlette.types import Send
 from app.chats.chat_reply import ChatReplyService
 from app.chats.chat_reply import ChatSessionNotFound
 from app.chats.chat_session import ChatSession
+from app.chats.history import ConversationHistory
+from app.chats.history import HistoryPage
+from app.chats.history import InvalidCursor
 from app.chats.span import Span
 from app.chats.trace import Trace
 
 
+_HISTORY_LIMIT = 20
+
+
 class ReplyBody(BaseModel):
-    """发送一轮回复的请求体。"""
+    """发送一轮回复的请求体；sibling_of 给出时新一轮与那条 Trace 同父，用于编辑和重新生成。"""
 
     text: str = ""
+    sibling_of: str | None = None
+
+
+class SwitchBranchBody(BaseModel):
+    """切换版本的请求体。"""
+
+    trace_id: str
 
 
 class ClosingStreamingResponse(StreamingResponse):
@@ -46,8 +60,8 @@ def traces_router(engine: Engine, replies: ChatReplyService) -> APIRouter:
     router = APIRouter()
 
     @router.get("/chat-sessions/{session_id}/traces")
-    def list_traces(session_id: str, request: Request) -> dict[str, list[dict[str, str]]]:
-        """返回当前用户会话中的 Trace，按创建时间升序排列。"""
+    def list_traces(session_id: str, request: Request) -> dict[str, list[dict[str, str | None]]]:
+        """返回当前用户会话中所有分支的 Trace，按创建时间升序排列，供调试使用。"""
         username = _current_username(request)
         with Session(engine) as session:
             chat_session = ChatSession.get_for_user(session, session_id, username)
@@ -82,7 +96,7 @@ def traces_router(engine: Engine, replies: ChatReplyService) -> APIRouter:
         if not user_text:
             raise HTTPException(status_code=400, detail="不能为空")
         try:
-            trace_id, span_id = replies.begin_reply(session_id, username, user_text)
+            trace_id, span_id = replies.begin_reply(session_id, username, user_text, body.sibling_of)
         except ChatSessionNotFound as error:
             raise HTTPException(status_code=404, detail="会话不存在") from error
         return ClosingStreamingResponse(
@@ -90,7 +104,67 @@ def traces_router(engine: Engine, replies: ChatReplyService) -> APIRouter:
             media_type="text/event-stream",
         )
 
+    @router.get("/chat-sessions/{session_id}/history")
+    def get_history(
+        session_id: str,
+        request: Request,
+        limit: int = Query(default=_HISTORY_LIMIT, ge=1, le=100),
+        before: str | None = None,
+    ) -> dict[str, object]:
+        """返回当前分支路径上的一页轮次；查询次数不随轮数增长。"""
+        username = _current_username(request)
+        with Session(engine) as session:
+            chat_session = _owned_session(session, session_id, username)
+            history = ConversationHistory(session, session_id)
+            try:
+                page = history.page(chat_session.active_trace_id, limit, before)
+            except InvalidCursor as error:
+                raise HTTPException(status_code=400, detail="分页位置无效") from error
+            return _history_payload(page)
+
+    @router.put("/chat-sessions/{session_id}/active-trace")
+    def switch_branch(session_id: str, body: SwitchBranchBody, request: Request) -> dict[str, object]:
+        """切换到指定版本所在分支的最新末端，返回切换后的第一页历史。"""
+        username = _current_username(request)
+        with Session(engine) as session:
+            chat_session = _owned_session(session, session_id, username)
+            history = ConversationHistory(session, session_id)
+            if history.tree.get(body.trace_id) is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            chat_session.update(session, active_trace_id=history.tree.branch_end(body.trace_id))
+            return _history_payload(history.page(chat_session.active_trace_id, _HISTORY_LIMIT))
+
     return router
+
+
+def _owned_session(session: Session, session_id: str, username: str) -> ChatSession:
+    """读取当前用户的会话；不存在或越权时统一返回 404。"""
+    chat_session = ChatSession.get_for_user(session, session_id, username)
+    if chat_session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return chat_session
+
+
+def _history_payload(page: HistoryPage) -> dict[str, object]:
+    """把一页轮次转换为公开响应字段。"""
+    return {
+        "turns": [
+            {
+                "trace_id": turn.trace_id,
+                "user_text": turn.user_text,
+                "status": turn.status,
+                "created_at": _iso_utc(turn.created_at),
+                "reply": turn.reply,
+                "versions": {
+                    "index": turn.version_index,
+                    "total": len(turn.version_ids),
+                    "trace_ids": list(turn.version_ids),
+                },
+            }
+            for turn in page.turns
+        ],
+        "has_more": page.has_more,
+    }
 
 
 def _current_username(request: Request) -> str:
@@ -101,10 +175,11 @@ def _current_username(request: Request) -> str:
     return username
 
 
-def _trace_payload(trace: Trace) -> dict[str, str]:
+def _trace_payload(trace: Trace) -> dict[str, str | None]:
     """把 Trace 模型转换为公开响应字段。"""
     return {
         "id": trace.id,
+        "parent_trace_id": trace.parent_trace_id,
         "user_text": trace.user_text,
         "status": trace.status,
         "created_at": _iso_utc(trace.created_at),

@@ -54,7 +54,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(DEV_ORIGINS),
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "satoken"],
     )
     app.include_router(register_router(Registration(engine, codes)))

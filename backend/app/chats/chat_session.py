@@ -18,7 +18,7 @@ from app.db.crud_model import CrudModel
 
 
 class ChatSession(CrudModel):
-    """聊天会话表；继承 CrudModel 的 CRUD 实现并封装会话查询。"""
+    """聊天会话表；active_trace_id 记录当前显示的分支末端。继承 CrudModel 的 CRUD 实现并封装会话查询。"""
 
     __tablename__ = "chat_sessions"
     __table_args__ = (Index("ix_chat_sessions_username_updated_at", "username", "updated_at"),)
@@ -28,6 +28,8 @@ class ChatSession(CrudModel):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # chat_sessions 先于 traces 建表，这里不建外键，由回复服务保证指向本会话的 Trace。
+    active_trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     @classmethod
     def create_for_user(cls, session: Session, username: str) -> "ChatSession":

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""协调 Trace 与 Span 的创建、会话标题更新和回复结束时的一次写入。"""
+"""协调 Trace 与 Span 的创建、分支末端和会话标题更新，以及回复结束时的一次写入。"""
 
 import json
 from collections.abc import AsyncIterator
@@ -41,17 +41,28 @@ class ChatReplyService:
         self._engine = engine
         self._text_limit = text_limit
 
-    def begin_reply(self, session_id: str, username: str, user_text: str) -> tuple[str, str]:
-        """创建 running Trace 和空 text Span，并更新会话标题和时间。"""
+    def begin_reply(
+        self,
+        session_id: str,
+        username: str,
+        user_text: str,
+        sibling_of: str | None = None,
+    ) -> tuple[str, str]:
+        """创建 running Trace 和空 text Span，把它设为当前分支末端，并更新会话标题和时间。
+
+        sibling_of 为空时接在当前分支末端之后；给出时与那条 Trace 同父，用于编辑和重新生成。
+        """
         with Session(self._engine) as session:
             chat_session = ChatSession.get_for_user(session, session_id, username)
             if chat_session is None:
                 raise ChatSessionNotFound(session_id)
+            parent_trace_id = self._parent_for(session, chat_session, sibling_of)
             created_at = datetime.now(UTC)
             trace_id = uuid4().hex
             trace = Trace(
                 id=trace_id,
                 session_id=chat_session.id,
+                parent_trace_id=parent_trace_id,
                 user_text=user_text,
                 status=TraceStatus.RUNNING,
                 created_at=created_at,
@@ -71,6 +82,7 @@ class ChatReplyService:
             session.add(trace)
             session.flush()
             session.add(span)
+            chat_session.active_trace_id = trace_id
             chat_session.updated_at = created_at
             if chat_session.title == _DEFAULT_TITLE:
                 chat_session.title = _title_from(user_text)
@@ -105,6 +117,16 @@ class ChatReplyService:
         finally:
             if not finished:
                 await self._finish(trace_id, span_id, "".join(accumulated), completed=False)
+
+    @staticmethod
+    def _parent_for(session: Session, chat_session: ChatSession, sibling_of: str | None) -> str | None:
+        """确定新 Trace 的父级；sibling_of 不属于该会话时按会话不存在处理，不泄露其他会话的编号。"""
+        if sibling_of is None:
+            return chat_session.active_trace_id
+        target = Trace.get(session, sibling_of)
+        if target is None or target.session_id != chat_session.id:
+            raise ChatSessionNotFound(chat_session.id)
+        return target.parent_trace_id
 
     def fail_stale_replies(self) -> None:
         """把超过时限仍为 running 的 Trace 和 Span 标为 failed，供进程启动时清理残留。"""

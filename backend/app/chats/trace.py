@@ -28,16 +28,24 @@ class TraceStatus(StrEnum):
 
 
 class Trace(CrudModel):
-    """一条 Trace 代表一个会话中的单轮用户请求。"""
+    """一条 Trace 代表一个会话中的单轮用户请求；parent_trace_id 指向它接在哪一轮之后，会话内的 Trace 组成一棵树。"""
 
     __tablename__ = "traces"
-    __table_args__ = (Index("ix_traces_session_created_at", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_traces_session_created_at", "session_id", "created_at"),
+        Index("ix_traces_session_parent", "session_id", "parent_trace_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     session_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("chat_sessions.id"),
         nullable=False,
+    )
+    parent_trace_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("traces.id", name="fk_traces_parent_trace_id"),
+        nullable=True,
     )
     user_text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[TraceStatus] = mapped_column(string_enum(TraceStatus, 16), nullable=False)

@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import URL
 from sqlalchemy.schema import CreateSchema
 
+from app.chats.branch_migration import BranchMigration
 from app.chats.chat_session import ChatSession
 from app.chats.span import Span
 from app.chats.trace import Trace
@@ -24,8 +25,8 @@ class DatabaseCreator:
         """保存开发和测试数据库的连接配置。"""
         self._settings = settings
 
-    def create(self, target: str, rebuild_spans: bool = False) -> str:
-        """创建所选数据库并初始化当前项目的数据表；显式要求时先删除旧的 spans 表。"""
+    def create(self, target: str, rebuild_spans: bool = False, migrate_branches: bool = False) -> str:
+        """创建所选数据库并初始化当前项目的数据表；显式要求时重建 spans 表或升级到对话分支结构。"""
         mysql = self._target_settings(target)
         self._create_database(mysql)
         engine = mysql_engine(mysql)
@@ -36,6 +37,8 @@ class DatabaseCreator:
             if rebuild_spans:
                 Span.__table__.drop(engine, checkfirst=True)
             Span.create_table(engine)
+            if migrate_branches:
+                BranchMigration(engine).run()
         finally:
             engine.dispose()
         return mysql.database
@@ -80,6 +83,11 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="删除并按当前结构重建 spans 表，表中数据会丢失",
     )
+    parser.add_argument(
+        "--migrate-branches",
+        action="store_true",
+        help="补齐对话分支所需的列、外键和索引，并把已有 Trace 按时间串成一条链",
+    )
     return parser.parse_args()
 
 
@@ -87,7 +95,7 @@ def main() -> None:
     """读取本地配置并执行指定目标的数据库初始化。"""
     arguments = _arguments()
     creator = DatabaseCreator(AppSettings.load(DEV_CONFIG))
-    database = creator.create(arguments.target, arguments.rebuild_spans)
+    database = creator.create(arguments.target, arguments.rebuild_spans, arguments.migrate_branches)
     label = "开发" if arguments.target == "development" else "测试"
     print(f"{label}数据库及应用表已就绪：{database}")
 

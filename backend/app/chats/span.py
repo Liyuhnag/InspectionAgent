@@ -50,7 +50,7 @@ class SpanStatus(StrEnum):
 
 
 class Span(CrudModel):
-    """一个 Span 记录 Trace 中某一步的类型、归属、输出原文和摘要。"""
+    """一个 Span 记录 Trace 中某一步的类型、归属、输出原文和摘要；llm 类型另记提示词、组装规则版本和输入指纹，供审计核对。"""
 
     __tablename__ = "spans"
     __table_args__ = (
@@ -68,6 +68,9 @@ class Span(CrudModel):
     node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    context_rule_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     text: Mapped[str] = mapped_column(_LongText, nullable=False)
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False)
     summary: Mapped[str | None] = mapped_column(_LongText, nullable=True)
@@ -81,6 +84,18 @@ class Span(CrudModel):
     def list_for_trace(cls, session: Session, trace_id: str) -> list["Span"]:
         """按顺序从小到大列出 Trace 的 Span。"""
         query = select(cls).where(cls.trace_id == trace_id).order_by(cls.sequence.asc())
+        return list(session.scalars(query))
+
+    @classmethod
+    def list_visible_text(cls, session: Session, trace_ids: list[str]) -> list["Span"]:
+        """一次查询取出多条 Trace 中进入用户气泡的 text Span，按 Trace 和顺序排列。"""
+        if not trace_ids:
+            return []
+        query = (
+            select(cls)
+            .where(cls.trace_id.in_(trace_ids), cls.visible.is_(True), cls.type == SpanType.TEXT)
+            .order_by(cls.trace_id.asc(), cls.sequence.asc())
+        )
         return list(session.scalars(query))
 
     @classmethod

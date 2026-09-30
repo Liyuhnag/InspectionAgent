@@ -10,6 +10,7 @@ import userAvatar from '@/assets/avatar-user.svg'
 import {
   createChatSession,
   getChatSession,
+  listChatSessionSpans,
   listChatSessionTraces,
   listChatSessions,
 } from '@/api/chatSessions'
@@ -18,7 +19,7 @@ import { DialogueDesk } from '@/domain/chat/DialogueDesk'
 import { renderMarkdown } from '@/domain/chat/renderMarkdown'
 import { SequenceId } from '@/domain/chat/SequenceId'
 import { SseChunkSource } from '@/domain/chat/SseChunkSource'
-import type { TextChunkSource, TraceStatus } from '@/domain/chat/types'
+import type { PersistedTrace, TextChunkSource, TraceStatus } from '@/domain/chat/types'
 
 const props = withDefaults(
   defineProps<{
@@ -95,6 +96,15 @@ const failed = computed(() => {
   return last?.status === 'error'
 })
 
+/** 读取一组 Trace 和各自的 Span，用于恢复已持久化的对话。 */
+async function loadTraceHistory(sessionId: string): Promise<PersistedTrace[]> {
+  const response = await listChatSessionTraces(sessionId)
+  return Promise.all(response.traces.map(async (trace) => {
+    const spans = await listChatSessionSpans(sessionId, trace.id)
+    return { ...trace, spans: spans.spans }
+  }))
+}
+
 /** 从后端加载会话；空列表时创建一条默认会话。 */
 async function loadSessions(): Promise<void> {
   const requestId = ++selectionRequest
@@ -103,10 +113,10 @@ async function loadSessions(): Promise<void> {
   try {
     const response = await listChatSessions()
     const sessions = response.sessions.length ? response.sessions : [await createChatSession()]
-    const tracesResponse = await listChatSessionTraces(sessions[0].id)
+    const traces = await loadTraceHistory(sessions[0].id)
     if (requestId === selectionRequest) {
       desk.load(sessions)
-      desk.loadTraces(sessions[0].id, tracesResponse.traces)
+      desk.loadTraces(sessions[0].id, traces)
     }
   } catch (error) {
     if (requestId === selectionRequest) {
@@ -187,7 +197,7 @@ async function selectDialogue(item: { id?: string }): Promise<void> {
     const existing = desk.dialogues.find((dialogue) => dialogue.id === selected.id)
     const traces = existing?.tracesLoaded
       ? null
-      : (await listChatSessionTraces(selected.id)).traces
+      : await loadTraceHistory(selected.id)
     if (requestId === selectionRequest) {
       desk.select(selected.id)
       desk.active.title = selected.title

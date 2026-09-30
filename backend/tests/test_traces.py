@@ -3,19 +3,29 @@
 
 import asyncio
 import json
+from contextlib import aclosing
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 
+import anyio
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy import create_engine
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api.auth import TOKEN_HEADER
+from app.api.routes.traces import ClosingStreamingResponse
 from app.chats.chat_reply import ChatReplyService
 from app.chats.mock_reply import mock_reply
 from app.chats.chat_session import ChatSession
+from app.chats.span import SPAN_TEXT_LIMIT
+from app.chats.span import Span
+from app.chats.span import clip_text
 from app.chats.trace import Trace
 from app.main import create_app
 from app.users.login import session_key
@@ -82,6 +92,8 @@ def _cleanup(engine: Engine, codes: MemoryRedis, tokens: dict[str, str]) -> None
         codes.delete(session_key(token))
     with Session(engine) as session:
         session_ids = select(ChatSession.id).where(ChatSession.username.in_(_USERS))
+        trace_ids = select(Trace.id).where(Trace.session_id.in_(session_ids))
+        session.execute(delete(Span).where(Span.trace_id.in_(trace_ids)))
         session.execute(delete(Trace).where(Trace.session_id.in_(session_ids)))
         session.execute(delete(ChatSession).where(ChatSession.username.in_(_USERS)))
         session.commit()
@@ -143,12 +155,13 @@ def test_每轮回复创建Trace并在结束后保存状态与首轮标题() -> 
             assert response.headers["content-type"].startswith("text/event-stream")
             body = "".join(response.iter_text())
         events = _events(body)
-        assert events[-1] == ("done", {})
+        assert events[-1][0] == "done"
+        assert set(events[-1][1]) == {"trace_id", "span_id"}
         assert all(name == "chunk" for name, _payload in events[:-1])
         chunks = [payload["text"] for _name, payload in events[:-1]]
         assert all(isinstance(chunk, str) and 0 < len(chunk) <= 4 for chunk in chunks)
         assert "".join(chunks) == mock_reply(text)
-        assert all("trace_id" not in payload for _name, payload in events)
+        assert all("trace_id" not in payload for _name, payload in events[:-1])
 
         traces_response = client.get(f"/chat-sessions/{session_id}/traces", headers=owner_headers)
         assert traces_response.status_code == 200
@@ -157,6 +170,31 @@ def test_每轮回复创建Trace并在结束后保存状态与首轮标题() -> 
         assert traces[0]["user_text"] == text
         assert traces[0]["status"] == "complete"
         assert len(traces[0]["id"]) == 32
+        spans_response = client.get(
+            f"/chat-sessions/{session_id}/traces/{traces[0]['id']}/spans",
+            headers=owner_headers,
+        )
+        assert spans_response.status_code == 200
+        spans = spans_response.json()["spans"]
+        assert len(spans) == 1
+        started_at = spans[0].pop("started_at")
+        ended_at = spans[0].pop("ended_at")
+        assert started_at.endswith("Z")
+        assert ended_at.endswith("Z")
+        assert started_at <= ended_at
+        assert spans == [{
+            "id": events[-1][1]["span_id"],
+            "sequence": 1,
+            "type": "text",
+            "status": "complete",
+            "parent_span_id": None,
+            "agent_name": None,
+            "node": None,
+            "visible": True,
+            "model": None,
+            "text": mock_reply(text),
+            "truncated": False,
+        }]
         session = client.get(f"/chat-sessions/{session_id}", headers=owner_headers).json()
         assert session["title"] == f"{text[:16]}…"
 
@@ -187,6 +225,11 @@ def test_每轮回复创建Trace并在结束后保存状态与首轮标题() -> 
         assert (forbidden_list.status_code, forbidden_list.json()) == (missing.status_code, missing.json())
         assert (forbidden_reply.status_code, forbidden_reply.json()) == (missing.status_code, missing.json())
         assert missing.status_code == 404
+        forbidden_spans = client.get(
+            f"/chat-sessions/{session_id}/traces/{traces[0]['id']}/spans",
+            headers=other_headers,
+        )
+        assert (forbidden_spans.status_code, forbidden_spans.json()) == (missing.status_code, missing.json())
     finally:
         _cleanup(engine, codes, tokens)
         engine.dispose()
@@ -207,28 +250,184 @@ def test_未登录时拒绝Trace接口() -> None:
         engine.dispose()
 
 
-def test_流被取消后将Trace标记为失败() -> None:
-    """消费者停止读取事件流时保留输入并把trace状态改为failed。"""
+def _span_row(engine: Engine, span_id: str) -> Span:
+    """用新的数据库会话读取 Span，避免读到本进程缓存的旧值。"""
+    with Session(engine) as session:
+        span = Span.get(session, span_id)
+        assert span is not None
+        session.expunge(span)
+        return span
+
+
+def _trace_status(engine: Engine, trace_id: str) -> str:
+    """用新的数据库会话读取 Trace 状态。"""
+    with Session(engine) as session:
+        trace = Trace.get(session, trace_id)
+        assert trace is not None
+        return trace.status
+
+
+def test_流被取消后将Trace与Span标记为失败并保留已推送正文() -> None:
+    """推送期间不写正文；消费者停止读取后一次写入已推送部分并标为failed。"""
     engine, codes, client, tokens = _setup()
     try:
         session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
         service = ChatReplyService(engine)
-        trace_id = service.begin_reply(session_id, _USERS[0], "中断场景")
+        trace_id, span_id = service.begin_reply(session_id, _USERS[0], "中断场景")
+        created = _span_row(engine, span_id)
+        assert (created.status, created.text, created.visible, created.truncated) == ("running", "", True, False)
+        assert created.started_at is not None
+        assert created.ended_at is None
 
-        async def close_after_first_chunk() -> str:
-            """收到首段后关闭流，模拟客户端中断。"""
-            stream = service.stream_reply(trace_id, "中断场景")
-            first = await anext(stream)
+        async def close_after_two_chunks() -> tuple[list[str], Span]:
+            """收到两段后读库，再关闭流，模拟客户端中断。"""
+            stream = service.stream_reply(trace_id, span_id, "中断场景")
+            events = [await anext(stream), await anext(stream)]
+            streaming = _span_row(engine, span_id)
             await stream.aclose()
-            return first
+            return events, streaming
 
-        first_event = asyncio.run(close_after_first_chunk())
-        assert first_event.startswith("event: chunk")
+        events, streaming = asyncio.run(close_after_two_chunks())
+        assert (streaming.status, streaming.text) == ("running", "")
+        assert all(event.startswith("event: chunk") for event in events)
+        sent = "".join(json.loads(event.split("data:", 1)[1])["text"] for event in events)
+        span = _span_row(engine, span_id)
+        assert _trace_status(engine, trace_id) == "failed"
+        assert (span.status, span.text, span.truncated) == ("failed", sent, False)
+        assert span.ended_at is not None
+    finally:
+        _cleanup(engine, codes, tokens)
+        engine.dispose()
+
+
+def test_取消范围内关闭流仍完成失败状态写入() -> None:
+    """anyio 取消会反复打断等待，最终写入需要屏蔽取消才能完成。"""
+    engine, codes, client, tokens = _setup()
+    try:
+        session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
+        service = ChatReplyService(engine)
+        trace_id, span_id = service.begin_reply(session_id, _USERS[0], "取消场景")
+
+        async def cancel_while_reading() -> None:
+            """在任务组里读取事件，首段后取消整个任务组。"""
+            started = anyio.Event()
+
+            async def consume() -> None:
+                """读取事件并在首段后挂起；退出时关闭生成器。"""
+                async with aclosing(service.stream_reply(trace_id, span_id, "取消场景")) as stream:
+                    async for _event in stream:
+                        started.set()
+                        await anyio.sleep(10)
+
+            async with anyio.create_task_group() as group:
+                group.start_soon(consume)
+                await started.wait()
+                group.cancel_scope.cancel()
+
+        anyio.run(cancel_while_reading)
+        span = _span_row(engine, span_id)
+        assert _trace_status(engine, trace_id) == "failed"
+        assert span.status == "failed"
+        assert len(span.text) > 0
+    finally:
+        _cleanup(engine, codes, tokens)
+        engine.dispose()
+
+
+def test_客户端断开时响应关闭生成器并写入失败状态() -> None:
+    """发送失败时 Starlette 不关闭生成器，回复响应需要自己关闭，才能立即写库。"""
+    engine, codes, client, tokens = _setup()
+    try:
+        session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
+        service = ChatReplyService(engine)
+        trace_id, span_id = service.begin_reply(session_id, _USERS[0], "断开场景")
+        stream = service.stream_reply(trace_id, span_id, "断开场景")
+        response = ClosingStreamingResponse(stream, media_type="text/event-stream")
+        bodies: list[bytes] = []
+
+        async def send(message: dict[str, object]) -> None:
+            """收到第二段正文时模拟连接已断开。"""
+            if message["type"] != "http.response.body":
+                return
+            if len(bodies) == 2:
+                raise OSError("连接已断开")
+            bodies.append(message["body"])
+
+        async def run() -> str:
+            """推送响应并吞掉模拟的断开错误；在事件循环关闭前读取状态。"""
+            try:
+                await response.stream_response(send)
+            except OSError:
+                pass
+            return _trace_status(engine, trace_id)
+
+        trace_status = anyio.run(run)
+        sent = "".join(json.loads(body.decode().split("data:", 1)[1])["text"] for body in bodies)
+        span = _span_row(engine, span_id)
+        assert trace_status == "failed"
+        assert span.status == "failed"
+        assert span.text.startswith(sent)
+    finally:
+        _cleanup(engine, codes, tokens)
+        engine.dispose()
+
+
+def test_正文按UTF8字节截断且不切开字符() -> None:
+    """超过上限时截在字符边界并标记截断，未超过时原样返回。"""
+    assert clip_text("阀门ab", 7) == ("阀门a", True)
+    assert clip_text("阀门ab", 5) == ("阀", True)
+    assert clip_text("阀门ab", 8) == ("阀门ab", False)
+    assert clip_text("", 0) == ("", False)
+    assert SPAN_TEXT_LIMIT == 64 * 1024
+
+
+def test_超长正文写入时截断() -> None:
+    """推送给客户端的是全文，写库的正文不超过上限并标记截断。"""
+    engine, codes, client, tokens = _setup()
+    try:
+        session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
+        service = ChatReplyService(engine, text_limit=10)
+        trace_id, span_id = service.begin_reply(session_id, _USERS[0], "截断场景")
+
+        async def read_all() -> list[str]:
+            """读完整条事件流。"""
+            return [event async for event in service.stream_reply(trace_id, span_id, "截断场景")]
+
+        events = asyncio.run(read_all())
+        sent = "".join(json.loads(event.split("data:", 1)[1])["text"] for event in events[:-1])
+        assert sent == mock_reply("截断场景")
+        span = _span_row(engine, span_id)
+        assert span.status == "complete"
+        assert span.truncated is True
+        assert span.text == clip_text(sent, 10)[0]
+        assert len(span.text.encode("utf-8")) <= 10
+    finally:
+        _cleanup(engine, codes, tokens)
+        engine.dispose()
+
+
+def test_启动清理只把过期的running标为失败() -> None:
+    """超过时限的 running Trace 和 Span 改为 failed，时限内的不变。"""
+    engine, codes, client, tokens = _setup()
+    try:
+        session_id = client.post("/chat-sessions", headers={TOKEN_HEADER: tokens[_USERS[0]]}).json()["id"]
+        service = ChatReplyService(engine)
+        stale_trace, stale_span = service.begin_reply(session_id, _USERS[0], "过期")
+        fresh_trace, fresh_span = service.begin_reply(session_id, _USERS[0], "新近")
+        old = datetime.now(UTC) - timedelta(minutes=11)
         with Session(engine) as session:
-            trace = Trace.get(session, trace_id)
-            assert trace is not None
-            assert trace.status == "failed"
-            assert trace.user_text == "中断场景"
+            session.execute(update(Trace).where(Trace.id == stale_trace).values(created_at=old))
+            session.execute(update(Span).where(Span.id == stale_span).values(started_at=old))
+            session.commit()
+
+        service.fail_stale_replies()
+
+        assert _trace_status(engine, stale_trace) == "failed"
+        assert _trace_status(engine, fresh_trace) == "running"
+        swept = _span_row(engine, stale_span)
+        assert swept.status == "failed"
+        assert swept.ended_at is not None
+        assert _span_row(engine, fresh_span).status == "running"
     finally:
         _cleanup(engine, codes, tokens)
         engine.dispose()
@@ -251,6 +450,15 @@ def test_mysql数据库可以持久化完整Trace状态流转() -> None:
         assert len(history) == 1
         assert history[0]["user_text"] == "MySQL Trace"
         assert history[0]["status"] == "complete"
+        spans = client.get(
+            f"/chat-sessions/{session_id}/traces/{history[0]['id']}/spans",
+            headers=headers,
+        ).json()["spans"]
+        assert len(spans) == 1
+        assert spans[0]["type"] == "text"
+        assert spans[0]["status"] == "complete"
+        assert spans[0]["text"] == mock_reply("MySQL Trace")
+        assert spans[0]["started_at"] <= spans[0]["ended_at"]
     finally:
         _cleanup(engine, codes, tokens)
         engine.dispose()

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""应用入口。启动时创建用户、聊天会话和 Trace 表，并挂上业务接口。"""
+"""应用入口。启动时创建用户、聊天会话、Trace 和 Span 表，清理残留的 running 记录，并挂上业务接口。"""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +13,7 @@ from app.api.routes.session import session_router
 from app.api.routes.traces import traces_router
 from app.chats.chat_reply import ChatReplyService
 from app.chats.chat_session import ChatSession
+from app.chats.span import Span
 from app.chats.trace import Trace
 from app.config.settings import DEV_CONFIG
 from app.config.settings import AppSettings
@@ -43,8 +44,10 @@ def create_app(
     User.create_table(engine)
     ChatSession.create_table(engine)
     Trace.create_table(engine)
+    Span.create_table(engine)
     login = Login(engine, codes, session_ttl_seconds)
     replies = ChatReplyService(engine)
+    replies.fail_stale_replies()
     app = FastAPI()
     app.add_middleware(AuthMiddleware, login=login)
     app.add_middleware(

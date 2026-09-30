@@ -9,6 +9,7 @@ from sqlalchemy import Index
 from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import mapped_column
@@ -37,3 +38,9 @@ class Trace(CrudModel):
         """按创建时间从早到晚列出会话的所有 Trace。"""
         query = select(cls).where(cls.session_id == session_id).order_by(cls.created_at.asc())
         return list(session.scalars(query))
+
+    @classmethod
+    def fail_running_before(cls, session: Session, before: datetime) -> None:
+        """把创建时间早于给定时刻、仍为 running 的 Trace 标为 failed，不提交。"""
+        query = update(cls).where(cls.status == "running", cls.created_at < before).values(status="failed")
+        session.execute(query)

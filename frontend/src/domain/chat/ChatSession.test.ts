@@ -3,7 +3,27 @@ import { describe, expect, it, vi } from 'vitest'
 import { ChatSession, preferDraft, senderText, visibleText } from './ChatSession'
 import { LocalTimedChunkSource, localReply } from './LocalTimedChunkSource'
 import { SequenceId } from './SequenceId'
-import type { TextChunkSource } from './types'
+import type { PersistedSpan, TextChunkSource } from './types'
+
+/** 生成一条可见、已完成的 text Span，测试只覆盖关心的字段。 */
+function persistedSpan(overrides: Partial<PersistedSpan>): PersistedSpan {
+  return {
+    id: 'span',
+    sequence: 1,
+    type: 'text',
+    status: 'complete',
+    parent_span_id: null,
+    agent_name: null,
+    node: null,
+    visible: true,
+    model: null,
+    text: '',
+    truncated: false,
+    started_at: '2026-01-01T00:00:00Z',
+    ended_at: '2026-01-01T00:00:01Z',
+    ...overrides,
+  }
+}
 
 class ManualSource implements TextChunkSource {
   onChunk: ((chunk: string) => void) | null = null
@@ -116,7 +136,7 @@ describe('ChatSession', () => {
     expect(text).toBe('可见')
   })
 
-  it('从持久化 Trace 恢复用户输入和状态，不恢复助手正文', () => {
+  it('从持久化 Trace 和 Span 恢复交替消息与状态', () => {
     const source = new ManualSource()
     const ids = new SequenceId()
     const session = new ChatSession(source, () => ids.next(), 'server-session')
@@ -127,18 +147,41 @@ describe('ChatSession', () => {
         user_text: '第一轮',
         status: 'complete',
         created_at: '2026-01-01T00:00:00Z',
+        spans: [
+          persistedSpan({ id: 'span-4', sequence: 4, text: '，请复核' }),
+          persistedSpan({ id: 'span-1', sequence: 1, text: '助手已回复' }),
+          persistedSpan({ id: 'span-2', sequence: 2, type: 'thinking', text: '不展示思考' }),
+          persistedSpan({ id: 'span-3', sequence: 3, visible: false, text: '子 agent 的中间文本' }),
+        ],
       },
       {
         id: 'trace-2',
         user_text: '第二轮',
         status: 'failed',
         created_at: '2026-01-01T00:01:00Z',
+        spans: [persistedSpan({ id: 'span-5', status: 'failed', text: '部分回复' })],
       },
     ])
 
-    expect(session.messages).toHaveLength(2)
-    expect(session.messages.map((message) => visibleText(message.parts))).toEqual(['第一轮', '第二轮'])
-    expect(session.messages.map((message) => message.traceStatus)).toEqual(['complete', 'failed'])
+    expect(session.messages).toHaveLength(4)
+    expect(session.messages.map((message) => visibleText(message.parts))).toEqual([
+      '第一轮',
+      '助手已回复，请复核',
+      '第二轮',
+      '部分回复',
+    ])
+    expect(session.messages.map((message) => message.status)).toEqual([
+      'complete',
+      'complete',
+      'complete',
+      'error',
+    ])
+    expect(session.messages.map((message) => message.traceStatus)).toEqual([
+      'complete',
+      undefined,
+      'failed',
+      undefined,
+    ])
   })
 })
 

@@ -23,7 +23,7 @@ const reply = [
 function sseBody(): string {
   const chunks = [reply.slice(0, 4), reply.slice(4)]
   const events = chunks.map((text) => `event: chunk\ndata: ${JSON.stringify({ text })}\n\n`)
-  events.push('event: done\ndata: {}\n\n')
+  events.push('event: done\ndata: {"trace_id":"trace-1","span_id":"span-1"}\n\n')
   return events.join('')
 }
 

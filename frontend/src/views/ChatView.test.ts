@@ -33,6 +33,7 @@ vi.mock('vue-element-plus-x', () => ({
 vi.mock('@/api/chatSessions', () => ({
   createChatSession: vi.fn(),
   getChatSession: vi.fn(),
+  listChatSessionSpans: vi.fn(),
   listChatSessionTraces: vi.fn(),
   listChatSessions: vi.fn(),
 }))
@@ -42,6 +43,7 @@ import type { TextChunkSource } from '@/domain/chat/types'
 import {
   createChatSession,
   getChatSession,
+  listChatSessionSpans,
   listChatSessionTraces,
   listChatSessions,
 } from '@/api/chatSessions'
@@ -86,6 +88,7 @@ class ManualSource implements TextChunkSource {
 describe('ChatView', () => {
   beforeEach(() => {
     vi.mocked(listChatSessions).mockReset().mockResolvedValue({ sessions: [firstSession] })
+    vi.mocked(listChatSessionSpans).mockReset().mockResolvedValue({ spans: [] })
     vi.mocked(listChatSessionTraces).mockReset().mockResolvedValue({ traces: [] })
     vi.mocked(createChatSession).mockReset().mockResolvedValue({
       id: 'session-2',
@@ -186,6 +189,23 @@ describe('ChatView', () => {
   })
 
   it('重新打开会话时恢复用户输入和 Trace 状态', async () => {
+    vi.mocked(listChatSessionSpans).mockResolvedValue({
+      spans: [{
+        id: 'span-1',
+        sequence: 1,
+        type: 'text',
+        status: 'failed',
+        parent_span_id: null,
+        agent_name: null,
+        node: null,
+        visible: true,
+        model: null,
+        text: '已经输出的部分',
+        truncated: false,
+        started_at: '2026-01-01T00:00:00Z',
+        ended_at: '2026-01-01T00:00:01Z',
+      }],
+    })
     vi.mocked(listChatSessionTraces).mockResolvedValue({
       traces: [{
         id: 'trace-1',
@@ -197,6 +217,7 @@ describe('ChatView', () => {
     const wrapper = await mountChat()
 
     expect(wrapper.text()).toContain('检查 1 号线压力')
+    expect(wrapper.text()).toContain('已经输出的部分')
     expect(wrapper.text()).toContain('回复失败')
   })
 })

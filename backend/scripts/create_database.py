@@ -8,6 +8,7 @@ from sqlalchemy import URL
 from sqlalchemy.schema import CreateSchema
 
 from app.chats.chat_session import ChatSession
+from app.chats.span import Span
 from app.chats.trace import Trace
 from app.config.settings import AppSettings
 from app.config.settings import DEV_CONFIG
@@ -23,8 +24,8 @@ class DatabaseCreator:
         """保存开发和测试数据库的连接配置。"""
         self._settings = settings
 
-    def create(self, target: str) -> str:
-        """创建所选数据库并初始化当前项目的数据表。"""
+    def create(self, target: str, rebuild_spans: bool = False) -> str:
+        """创建所选数据库并初始化当前项目的数据表；显式要求时先删除旧的 spans 表。"""
         mysql = self._target_settings(target)
         self._create_database(mysql)
         engine = mysql_engine(mysql)
@@ -32,6 +33,9 @@ class DatabaseCreator:
             User.create_table(engine)
             ChatSession.create_table(engine)
             Trace.create_table(engine)
+            if rebuild_spans:
+                Span.__table__.drop(engine, checkfirst=True)
+            Span.create_table(engine)
         finally:
             engine.dispose()
         return mysql.database
@@ -71,6 +75,11 @@ def _arguments() -> argparse.Namespace:
         required=True,
         help="明确选择 development 或 test",
     )
+    parser.add_argument(
+        "--rebuild-spans",
+        action="store_true",
+        help="删除并按当前结构重建 spans 表，表中数据会丢失",
+    )
     return parser.parse_args()
 
 
@@ -78,7 +87,7 @@ def main() -> None:
     """读取本地配置并执行指定目标的数据库初始化。"""
     arguments = _arguments()
     creator = DatabaseCreator(AppSettings.load(DEV_CONFIG))
-    database = creator.create(arguments.target)
+    database = creator.create(arguments.target, arguments.rebuild_spans)
     label = "开发" if arguments.target == "development" else "测试"
     print(f"{label}数据库及应用表已就绪：{database}")
 

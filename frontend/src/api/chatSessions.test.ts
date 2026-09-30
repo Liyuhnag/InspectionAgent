@@ -4,6 +4,7 @@ import { ApiError, saveToken } from './session'
 import {
   createChatSession,
   getChatSession,
+  listChatSessionSpans,
   listChatSessionTraces,
   listChatSessions,
   openChatSessionReply,
@@ -78,6 +79,17 @@ describe('聊天会话 API', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:8000/chat-sessions/session-1/traces',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it('按会话和 Trace 编号读取 Span', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ spans: [] }), { status: 200 }))
+
+    await expect(listChatSessionSpans('session-1', 'trace-1')).resolves.toEqual({ spans: [] })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/chat-sessions/session-1/traces/trace-1/spans',
       expect.objectContaining({ method: 'GET' }),
     )
   })

@@ -1,5 +1,5 @@
 import { ApiError, readToken } from './session'
-import type { PersistedTrace } from '@/domain/chat/types'
+import type { PersistedSpan, PersistedTrace } from '@/domain/chat/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
 
@@ -37,6 +37,17 @@ export async function listChatSessionTraces(sessionId: string): Promise<ChatTrac
   return parse<ChatTraceList>(await request(
     'GET',
     `/chat-sessions/${encodeURIComponent(sessionId)}/traces`,
+  ))
+}
+
+/** 读取指定 Trace 的执行片段。 */
+export async function listChatSessionSpans(
+  sessionId: string,
+  traceId: string,
+): Promise<{ spans: PersistedSpan[] }> {
+  return parse<{ spans: PersistedSpan[] }>(await request(
+    'GET',
+    `/chat-sessions/${encodeURIComponent(sessionId)}/traces/${encodeURIComponent(traceId)}/spans`,
   ))
 }
 

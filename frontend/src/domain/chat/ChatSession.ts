@@ -91,6 +91,15 @@ export class ChatSession {
         traceStatus: trace.status,
         parts: [{ type: 'text', text: trace.user_text }],
       })
+      this.messages.push({
+        id: this.nextId(),
+        role: 'assistant',
+        status: trace.status === 'complete' ? 'complete' : 'error',
+        parts: (trace.spans ?? [])
+          .filter((span) => span.visible && span.type === 'text')
+          .sort((left, right) => left.sequence - right.sequence)
+          .map((span) => ({ type: 'text', text: span.text })),
+      })
     }
   }
 
